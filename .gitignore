@@ -1,0 +1,28 @@
+# Build output
+dist/
+web/.next/
+web/node_modules/
+reconx
+
+# Scan output
+output/
+scans/
+reconx-output/
+test-*/
+results/
+*.log
+
+# IDE & OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.local
+
+# Temporary files
+target.txt
