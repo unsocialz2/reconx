@@ -149,7 +149,8 @@
 
 /* Animations */
 @keyframes glow-pulse {
-  0%, 100% {
+  0%,
+  100% {
     box-shadow: 0 0 8px rgba(0, 255, 136, 0.1);
   }
   50% {

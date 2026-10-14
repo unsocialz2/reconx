@@ -1,19 +1,19 @@
 package params
 
 import (
-"context"
-"encoding/json"
-"fmt"
-"os"
-"path/filepath"
-"strings"
-"sync"
-"time"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
 
-"github.com/reconx/reconx/internal/config"
-"github.com/reconx/reconx/internal/store"
-"github.com/reconx/reconx/pkg/logger"
-"github.com/reconx/reconx/pkg/runner"
+	"github.com/unsocialz2/reconx/internal/config"
+	"github.com/unsocialz2/reconx/internal/store"
+	"github.com/unsocialz2/reconx/pkg/logger"
+	"github.com/unsocialz2/reconx/pkg/runner"
 )
 
 // Module discovers hidden GET/POST/JSON parameters using multiple tools.
@@ -32,7 +32,7 @@ func New(cfg *config.Config, st *store.Store, log *logger.Logger, outDir string)
 // Run orchestrates all parameter discovery tools and writes WAF-split output files.
 func (m *Module) Run(ctx context.Context) error {
 	m.log.Phase("Hidden Parameter Discovery",
-"URL Parser → unfurl → ParamSpider → Arjun → x8 → dalfox → getJS")
+		"URL Parser → unfurl → ParamSpider → Arjun → x8 → dalfox → getJS")
 
 	paramsDir := filepath.Join(m.outDir, "params")
 	if err := os.MkdirAll(paramsDir, 0755); err != nil {
@@ -95,7 +95,7 @@ func (m *Module) Run(ctx context.Context) error {
 	_ = arjunPriority
 
 	m.log.Info("Parameter discovery: %d stream targets, %d WAF arjun targets, %d non-WAF arjun targets",
-len(dalfoxURLs), len(arjunWAF), len(arjunNoWAF))
+		len(dalfoxURLs), len(arjunWAF), len(arjunNoWAF))
 
 	// ── Run all tools in parallel ─────────────────────────────────────────────
 	start := time.Now()
@@ -110,7 +110,7 @@ len(dalfoxURLs), len(arjunWAF), len(arjunNoWAF))
 	}
 
 	// Tool: arjun on WAF hosts (slow, stable mode)
-	if runner.IsAvailable("arjun") && len(arjunWAF) > 0 {
+	if m.cfg.ToolAvailable("arjun") && len(arjunWAF) > 0 {
 		wafFile := filepath.Join(paramsDir, "arjun_targets_waf.txt")
 		wg.Add(1)
 		go func() {
@@ -125,7 +125,7 @@ len(dalfoxURLs), len(arjunWAF), len(arjunNoWAF))
 	}
 
 	// Tool: arjun on non-WAF hosts (faster)
-	if runner.IsAvailable("arjun") && len(arjunNoWAF) > 0 {
+	if m.cfg.ToolAvailable("arjun") && len(arjunNoWAF) > 0 {
 		nowafFile := filepath.Join(paramsDir, "arjun_targets_nowaf.txt")
 		wg.Add(1)
 		go func() {
@@ -138,7 +138,7 @@ len(dalfoxURLs), len(arjunWAF), len(arjunNoWAF))
 	}
 
 	// Tool: x8 (hidden param brute-force alternative)
-	if runner.IsAvailable("x8") {
+	if m.cfg.ToolAvailable("x8") {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -150,7 +150,7 @@ len(dalfoxURLs), len(arjunWAF), len(arjunNoWAF))
 	}
 
 	// Tool: ParamSpider
-	if runner.IsAvailable("paramspider") {
+	if m.cfg.ToolAvailable("paramspider") {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -162,7 +162,7 @@ len(dalfoxURLs), len(arjunWAF), len(arjunNoWAF))
 	}
 
 	// Tool: unfurl (deep URL param parsing)
-	if runner.IsAvailable("unfurl") {
+	if m.cfg.ToolAvailable("unfurl") {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -174,7 +174,7 @@ len(dalfoxURLs), len(arjunWAF), len(arjunNoWAF))
 	}
 
 	// Tool: dalfox --only-discovery
-	if runner.IsAvailable("dalfox") {
+	if m.cfg.ToolAvailable("dalfox") {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -186,7 +186,7 @@ len(dalfoxURLs), len(arjunWAF), len(arjunNoWAF))
 	}
 
 	// Tool: getJS — extract endpoints from JS files
-	if runner.IsAvailable("getJS") {
+	if m.cfg.ToolAvailable("getJS") {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -245,8 +245,8 @@ func (m *Module) runArjun(ctx context.Context, targetsFile, paramsDir, label str
 	threads := "15"
 	chunk := "250"
 	if isWAF {
-		threads = "5"   // balanced concurrency for WAF hosts
-		chunk = "200"   // 4x fewer HTTP requests than chunk 50
+		threads = "5" // balanced concurrency for WAF hosts
+		chunk = "200" // 4x fewer HTTP requests than chunk 50
 	}
 
 	args := []string{
@@ -286,11 +286,11 @@ func (m *Module) runArjun(ctx context.Context, targetsFile, paramsDir, label str
 				m.log.InfoBoard(board, "  [arjun/%s] %s", label, line)
 			}
 		}),
-runner.WithStderrCallback(func(line string) {
-m.log.DebugBoard(board, "arjun/%s: %s", label, line)
-board.Heartbeat("arjun:" + label)
-}),
-)
+		runner.WithStderrCallback(func(line string) {
+			m.log.DebugBoard(board, "arjun/%s: %s", label, line)
+			board.Heartbeat("arjun:" + label)
+		}),
+	)
 
 	found := m.parseArjunJSON(outFile)
 	board.Done("arjun:"+label, len(found))
@@ -299,7 +299,7 @@ board.Heartbeat("arjun:" + label)
 	if r.IsTimeout() {
 		m.log.ToolTimeout("arjun:"+label, len(found), timeout)
 	} else if r.Err != nil && len(found) == 0 {
-		m.log.ToolError("arjun:"+label, fmt.Errorf(r.DiagString()), r.Stderr)
+		m.log.ToolError("arjun:"+label, fmt.Errorf("%s", r.DiagString()), r.Stderr)
 	} else {
 		m.log.ToolDone("arjun:"+label, len(found), time.Since(start))
 	}
@@ -420,7 +420,7 @@ func (m *Module) runX8(ctx context.Context, targets []string, paramsDir string) 
 	if r.IsTimeout() {
 		m.log.ToolTimeout("x8", len(found), 30*time.Minute)
 	} else if r.Err != nil && len(found) == 0 {
-		m.log.ToolError("x8", fmt.Errorf(r.DiagString()), r.Stderr)
+		m.log.ToolError("x8", fmt.Errorf("%s", r.DiagString()), r.Stderr)
 	} else {
 		m.log.ToolDone("x8", len(found), time.Since(start))
 	}
@@ -483,7 +483,7 @@ func (m *Module) runParamSpider(ctx context.Context, paramsDir string) []string 
 		if r.IsTimeout() {
 			m.log.ToolTimeout("paramspider", count, 10*time.Minute)
 		} else if r.Err != nil && count == 0 {
-			m.log.ToolError("paramspider", fmt.Errorf(r.DiagString()), r.Stderr)
+			m.log.ToolError("paramspider", fmt.Errorf("%s", r.DiagString()), r.Stderr)
 		} else {
 			m.log.ToolDone("paramspider", count, time.Since(start))
 		}
@@ -547,7 +547,7 @@ func (m *Module) runUnfurl(ctx context.Context, urls []string, paramsDir string)
 	if r.IsTimeout() {
 		m.log.ToolTimeout("unfurl", len(params), 5*time.Minute)
 	} else if r.Err != nil && len(params) == 0 {
-		m.log.ToolError("unfurl", fmt.Errorf(r.DiagString()), r.Stderr)
+		m.log.ToolError("unfurl", fmt.Errorf("%s", r.DiagString()), r.Stderr)
 	} else {
 		m.log.ToolDone("unfurl", len(params), time.Since(start))
 	}
@@ -589,20 +589,20 @@ func (m *Module) runDalfox(ctx context.Context, urls []string, paramsDir string)
 	r := runner.Run(ctx, "dalfox", args,
 		runner.WithStdin(input),
 		runner.WithTimeout(timeout),
-runner.WithStderrCallback(func(line string) { m.log.DebugBoard(board, "dalfox: %s", line) }),
-runner.WithLineCallback(func(line string) {
-board.Heartbeat("dalfox")
-line = strings.TrimSpace(line)
-if line == "" || !strings.HasPrefix(line, "{") {
-return
-}
-paramName := jsonStr(line, "param")
-targetURL := jsonStr(line, "url")
-method := jsonStr(line, "method")
-if paramName == "" || targetURL == "" {
-return
-}
-m.store.AddParamFinding(&store.ParamFinding{
+		runner.WithStderrCallback(func(line string) { m.log.DebugBoard(board, "dalfox: %s", line) }),
+		runner.WithLineCallback(func(line string) {
+			board.Heartbeat("dalfox")
+			line = strings.TrimSpace(line)
+			if line == "" || !strings.HasPrefix(line, "{") {
+				return
+			}
+			paramName := jsonStr(line, "param")
+			targetURL := jsonStr(line, "url")
+			method := jsonStr(line, "method")
+			if paramName == "" || targetURL == "" {
+				return
+			}
+			m.store.AddParamFinding(&store.ParamFinding{
 				URL:    targetURL,
 				Method: method,
 				Params: []string{paramName},
@@ -619,7 +619,7 @@ m.store.AddParamFinding(&store.ParamFinding{
 	if r.IsTimeout() {
 		m.log.ToolTimeout("dalfox", count, timeout)
 	} else if r.Err != nil && count == 0 && !strings.Contains(strings.Join(r.Stderr, " "), "UNREACHABLE") {
-		m.log.ToolError("dalfox", fmt.Errorf(r.DiagString()), r.Stderr)
+		m.log.ToolError("dalfox", fmt.Errorf("%s", r.DiagString()), r.Stderr)
 	} else {
 		m.log.ToolDone("dalfox", count, time.Since(start))
 	}
@@ -664,8 +664,8 @@ func (m *Module) parseDalfoxJSON(jsonFile string) []string {
 // flag (checked against --help output). Cache the probe result — getJS runs
 // once per scan but the probe is cheap to reuse.
 var (
-	getJSFlagCacheMu    sync.Mutex
-	getJSFlagCache      = map[string]bool{}
+	getJSFlagCacheMu     sync.Mutex
+	getJSFlagCache       = map[string]bool{}
 	getJSFlagCacheLoaded = false
 )
 
@@ -775,7 +775,7 @@ func (m *Module) runGetJS(ctx context.Context, paramsDir string) {
 	board.Stop()
 
 	if r.Err != nil && count == 0 {
-		m.log.ToolError("getJS", fmt.Errorf(r.DiagString()), r.Stderr)
+		m.log.ToolError("getJS", fmt.Errorf("%s", r.DiagString()), r.Stderr)
 	} else {
 		m.log.ToolDone("getJS", count, time.Since(start))
 		if count > 0 {

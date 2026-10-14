@@ -3,21 +3,16 @@ package cors
 import (
 	"context"
 	"fmt"
-	"math/rand"
+	"github.com/unsocialz2/reconx/internal/config"
+	"github.com/unsocialz2/reconx/internal/scope"
+	"github.com/unsocialz2/reconx/internal/store"
+	"github.com/unsocialz2/reconx/pkg/logger"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/reconx/reconx/internal/config"
-	"github.com/reconx/reconx/internal/store"
-	"github.com/reconx/reconx/pkg/logger"
-	"github.com/reconx/reconx/pkg/runner"
 )
 
-// Module tests live HTTP/S hosts for CORS misconfigurations.
 type Module struct {
 	cfg    *config.Config
 	store  *store.Store
@@ -25,171 +20,65 @@ type Module struct {
 	outDir string
 }
 
-// New creates a CORS testing module
-func New(cfg *config.Config, st *store.Store, log *logger.Logger, outDir string) *Module {
-	return &Module{cfg: cfg, store: st, log: log, outDir: outDir}
+func New(cfg *config.Config, st *store.Store, log *logger.Logger, out string) *Module {
+	return &Module{cfg, st, log, out}
 }
 
-// Run executes CORS misconfiguration tests on live hosts.
+// classify records browser-relevant policy observations, never validated exploit impact.
+func classify(origin, acao, acac string) (string, bool) {
+	if acao != origin {
+		return "", false
+	} // '*' + credentials is rejected by browsers.
+	if strings.EqualFold(acac, "true") {
+		return "Reflected origin permits credentials; browser access and sensitive-data impact require validation", true
+	}
+	return "Reflected origin without credentials; sensitive-data impact requires validation", true
+}
 func (m *Module) Run(ctx context.Context) error {
-	m.log.Phase("CORS Misconfiguration Scan", "Testing live hosts for insecure CORS policies")
-
-	corsDir := filepath.Join(m.outDir, "cors")
-	if err := os.MkdirAll(corsDir, 0755); err != nil {
-		m.log.Warn("Could not create cors/ directory: %v", err)
+	client := scope.New(m.cfg).Client(5 * time.Second)
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	n := m.cfg.Workers
+	if n < 1 {
+		n = 1
 	}
-
-	hosts := m.store.GetHosts()
-	if len(hosts) == 0 {
-		m.log.Warn("No live hosts to test for CORS")
-		return nil
-	}
-
-	start := time.Now()
-	total := 0
-
-	// 1. If Corsy or cors-scanner is available, run it
-	if runner.IsAvailable("corsy") {
-		total = m.runCorsy(ctx, hosts, corsDir)
-	} else {
-		// Built-in lightweight concurrent CORS probe
-		total = m.runBuiltinCORSProbe(ctx, hosts)
-	}
-
-	m.log.PhaseComplete("CORS Misconfiguration Scan", total, time.Since(start))
-	return nil
-}
-
-func (m *Module) runCorsy(ctx context.Context, hosts []*store.Host, outDir string) int {
-	aliveFile := filepath.Join(m.outDir, "alive.txt")
-	outFile := filepath.Join(outDir, "corsy_results.json")
-	args := []string{"-i", aliveFile, "-o", outFile, "-q"}
-
-	m.log.Tool("corsy", fmt.Sprintf("%d hosts → %s", len(hosts), outFile))
-	start := time.Now()
-	count := 0
-
-	r := runner.Run(ctx, "corsy", args,
-runner.WithTimeout(15*time.Minute),
-runner.WithLineCallback(func(line string) {
-line = strings.TrimSpace(line)
-if strings.Contains(line, "ACAO") || strings.Contains(line, "VULN") {
-count++
-m.store.AddCORSFinding(&store.CORSFinding{
-					URL:         line,
-					Origin:      "evil.com",
-					Severity:    "medium",
-					Description: "Insecure CORS configuration discovered by corsy",
-				})
-			}
-		}),
-	)
-
-	if r.Err != nil && count == 0 {
-		m.log.Debug("corsy: %s", r.DiagString())
-	} else {
-		m.log.ToolDone("corsy", count, time.Since(start))
-	}
-	return count
-}
-
-func (m *Module) runBuiltinCORSProbe(ctx context.Context, hosts []*store.Host) int {
-	m.log.Info("Running built-in CORS origin reflection checks...")
-	start := time.Now()
-	count := 0
-	var mu sync.Mutex
-
-	client := &http.Client{
-		Timeout: 5 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-
-	sem := make(chan struct{}, 20)
+	sem := make(chan struct{}, n)
 	var wg sync.WaitGroup
-
-	testOrigins := []string{
-		"https://evil.com",
-		"https://null",
-		"https://attacker.org",
-	}
-
-	for _, h := range hosts {
-		targetURL := "https://" + h.Domain
-		if u, ok := h.Meta["url"]; ok {
-			targetURL = u
+	for _, h := range m.store.GetHosts() {
+		raw := h.Meta["url"]
+		if raw == "" {
+			raw = "https://" + h.Domain
 		}
-
-		for _, testOrigin := range testOrigins {
+		for _, origin := range []string{"https://reconx.invalid", "null"} {
+			select {
+			case <-ctx.Done():
+				wg.Wait()
+				return ctx.Err()
+			case sem <- struct{}{}:
+			}
 			wg.Add(1)
-			sem <- struct{}{}
-
-			// Add jitter before each request. Without this, 20 concurrent
-			// requests × 3 origins per host hit a server in a perfectly
-			// metronomic pattern that gets rate-limited / blocked by
-			// Cloudflare / Akamai. A random 10-50ms delay per request
-			// spreads the load and looks more like browser traffic.
-			time.Sleep(time.Duration(10+rand.Intn(40)) * time.Millisecond)
-
-			go func(urlStr, origin string) {
+			go func(raw, origin string) {
 				defer wg.Done()
 				defer func() { <-sem }()
-
-				req, err := http.NewRequestWithContext(ctx, "GET", urlStr, nil)
+				req, err := http.NewRequestWithContext(ctx, "GET", raw, nil)
 				if err != nil {
 					return
 				}
 				req.Header.Set("Origin", origin)
-				req.Header.Set("User-Agent", "Mozilla/5.0 (reconx-cors-audit)")
-
+				if p := strings.SplitN(m.cfg.BugBountyHeader, ":", 2); len(p) == 2 {
+					req.Header.Set(strings.TrimSpace(p[0]), strings.TrimSpace(p[1]))
+				}
 				resp, err := client.Do(req)
 				if err != nil {
 					return
 				}
 				defer resp.Body.Close()
-
-				acao := resp.Header.Get("Access-Control-Allow-Origin")
-				acac := resp.Header.Get("Access-Control-Allow-Credentials")
-
-				if acao == origin || acao == "*" {
-					isVuln := false
-					severity := "low"
-					desc := fmt.Sprintf("Reflected Origin: %s", acao)
-
-					if strings.EqualFold(acac, "true") && acao == origin {
-						isVuln = true
-						severity = "high"
-						desc = fmt.Sprintf("Critical CORS Misconfiguration: Origin %s reflected with Credentials Allowed", origin)
-					} else if acao == "*" && strings.EqualFold(acac, "true") {
-						isVuln = true
-						severity = "medium"
-						desc = "Wildcard Origin with Credentials Allowed"
-					} else if acao == origin {
-						isVuln = true
-						severity = "medium"
-					}
-
-					if isVuln {
-						mu.Lock()
-						count++
-						m.store.AddCORSFinding(&store.CORSFinding{
-							URL:         urlStr,
-							Origin:      origin,
-							ACAO:        acao,
-							ACAC:        acac,
-							Severity:    severity,
-							Description: desc,
-						})
-						mu.Unlock()
-						m.log.Warn("  [CORS %s] %s (ACAO: %s, ACAC: %s)", severity, urlStr, acao, acac)
-					}
+				acao, acac := resp.Header.Get("Access-Control-Allow-Origin"), resp.Header.Get("Access-Control-Allow-Credentials")
+				if desc, ok := classify(origin, acao, acac); ok {
+					m.store.AddCORSFinding(&store.CORSFinding{URL: raw, Origin: origin, ACAO: acao, ACAC: acac, Severity: "info", Description: fmt.Sprintf("Candidate: %s", desc)})
 				}
-			}(targetURL, testOrigin)
+			}(raw, origin)
 		}
 	}
-
 	wg.Wait()
-	m.log.ToolDone("cors-probe", count, time.Since(start))
-	return count
+	return ctx.Err()
 }

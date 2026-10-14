@@ -1,3 +1,3 @@
-module github.com/reconx/reconx
+module github.com/unsocialz2/reconx
 
 go 1.22

@@ -1,117 +1,122 @@
 package scope
 
 import (
+	"fmt"
+	"github.com/unsocialz2/reconx/internal/config"
 	"net"
+	"net/http"
+	"net/url"
 	"strings"
-
-	"github.com/reconx/reconx/internal/config"
+	"time"
 )
 
-// Filter enforces scope rules on discovered assets
-type Filter struct {
-	cfg *config.Config
-}
+type Filter struct{ cfg *config.Config }
 
-// New creates a new scope filter
-func New(cfg *config.Config) *Filter {
-	return &Filter{cfg: cfg}
-}
+func New(cfg *config.Config) *Filter { return &Filter{cfg} }
 
-// IsInScope returns true if the given value (domain, IP, URL) is within scope
+// Host parses URLs rather than interpreting userinfo, ports or query text as a hostname.
+func Host(value string) string {
+	value = strings.TrimSpace(value)
+	if strings.Contains(value, "://") || strings.HasPrefix(value, "//") {
+		u, err := url.Parse(value)
+		if err != nil || u.User != nil || u.Hostname() == "" {
+			return ""
+		}
+		return strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	}
+	if net.ParseIP(value) != nil {
+		return strings.ToLower(value)
+	}
+	u, err := url.Parse("//" + value)
+	if err != nil || u.User != nil {
+		return ""
+	}
+	return strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+}
 func (f *Filter) IsInScope(value string) bool {
-	value = strings.TrimSpace(strings.ToLower(value))
-	if value == "" {
+	host := Host(value)
+	if host == "" {
 		return false
 	}
-
-	// Strip protocol for matching
-	clean := value
-	for _, prefix := range []string{"https://", "http://", "ftp://"} {
-		clean = strings.TrimPrefix(clean, prefix)
-	}
-	// Strip path
-	if idx := strings.Index(clean, "/"); idx != -1 {
-		clean = clean[:idx]
-	}
-	// Strip port
-	if host, _, err := net.SplitHostPort(clean); err == nil {
-		clean = host
-	}
-
-	// Check out-of-scope first (deny wins)
-	for _, pattern := range f.cfg.Scope.OutOfScope {
-		pattern = strings.TrimSpace(strings.ToLower(pattern))
-		if matchPattern(clean, pattern) {
+	for _, p := range f.cfg.Scope.OutOfScope {
+		if matchPattern(host, strings.ToLower(strings.TrimSpace(p))) {
 			return false
 		}
 	}
-
-	// If in_scope list is empty, everything that's not out-of-scope is in
-	if len(f.cfg.Scope.InScope) == 0 {
-		// Still check against target domains
-		for _, domain := range f.cfg.Target.Domains {
-			d := strings.ToLower(domain)
-			if clean == d || strings.HasSuffix(clean, "."+d) {
-				return true
-			}
-		}
-		// Check IP ranges
-		for _, cidr := range f.cfg.Target.IPRanges {
-			if ipInCIDR(clean, cidr) {
+	if len(f.cfg.Scope.InScope) > 0 {
+		for _, p := range f.cfg.Scope.InScope {
+			if matchPattern(host, strings.ToLower(strings.TrimSpace(p))) {
 				return true
 			}
 		}
 		return false
 	}
-
-	// Check explicit in-scope list
-	for _, pattern := range f.cfg.Scope.InScope {
-		pattern = strings.TrimSpace(strings.ToLower(pattern))
-		if matchPattern(clean, pattern) {
+	for _, d := range f.cfg.Target.Domains {
+		if matchPattern(host, strings.ToLower(d)) {
 			return true
 		}
 	}
-
+	for _, cidr := range f.cfg.Target.IPRanges {
+		if ipInCIDR(host, cidr) || host == cidr {
+			return true
+		}
+	}
+	for _, asset := range f.cfg.Target.CloudAssets {
+		if Host(asset) == host {
+			return true
+		}
+	}
 	return false
 }
-
-// FilterList returns only in-scope items from a list
 func (f *Filter) FilterList(items []string) []string {
-	out := make([]string, 0, len(items))
-	for _, item := range items {
-		if f.IsInScope(item) {
-			out = append(out, item)
+	var out []string
+	for _, v := range items {
+		if f.IsInScope(v) {
+			out = append(out, v)
 		}
 	}
 	return out
 }
-
-// matchPattern checks if value matches a scope pattern.
-// Supports wildcards: *.example.com matches any subdomain.
-// "example.com" matches exactly example.com and *.example.com — NOT notexample.com.
 func matchPattern(value, pattern string) bool {
-	if pattern == value {
+	if strings.Contains(pattern, "/") {
+		return ipInCIDR(value, pattern)
+	}
+	if value == pattern {
 		return true
 	}
-	// Wildcard subdomain: *.example.com → sub.example.com, example.com
 	if strings.HasPrefix(pattern, "*.") {
-		base := pattern[2:]
-		return value == base || strings.HasSuffix(value, "."+base)
+		pattern = pattern[2:]
+		return value == pattern || strings.HasSuffix(value, "."+pattern)
 	}
-	// Plain domain: example.com → sub.example.com (must be a proper subdomain)
-	// Require a dot boundary: value ends with "."+pattern, not just pattern as substring
 	return strings.HasSuffix(value, "."+pattern)
 }
-
-// ipInCIDR checks if an IP string is within a CIDR range
 func ipInCIDR(ipStr, cidr string) bool {
 	ip := net.ParseIP(ipStr)
-	if ip == nil {
-		return false
-	}
 	_, network, err := net.ParseCIDR(cidr)
-	if err != nil {
-		return false
+	return ip != nil && err == nil && network.Contains(ip)
+}
+
+// Client checks every request, including each redirect, before contacting an asset.
+func (f *Filter) Client(timeout time.Duration) *http.Client {
+	return &http.Client{Timeout: timeout, Transport: scopedTransport{f, http.DefaultTransport}, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return fmt.Errorf("redirect limit exceeded")
+		}
+		if !f.IsInScope(req.URL.String()) {
+			return fmt.Errorf("redirect outside scope: %s", req.URL.Host)
+		}
+		return nil
+	}}
+}
+
+type scopedTransport struct {
+	filter *Filter
+	base   http.RoundTripper
+}
+
+func (t scopedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if (req.URL.Scheme != "http" && req.URL.Scheme != "https") || !t.filter.IsInScope(req.URL.String()) {
+		return nil, fmt.Errorf("request outside scope: %s", req.URL.Host)
 	}
-	return network.Contains(ip)
+	return t.base.RoundTrip(req)
 }

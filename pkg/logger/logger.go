@@ -54,7 +54,7 @@ type Logger struct {
 	mu       sync.Mutex
 	verbose  bool
 	start    time.Time
-	logFile  *os.File   // plain text log file (no ANSI)
+	logFile  *os.File // plain text log file (no ANSI)
 	counters map[string]int
 }
 
@@ -70,7 +70,7 @@ func New(verbose bool, logPath string) *Logger {
 		if dir := filepath.Dir(logPath); dir != "." && dir != "" {
 			_ = os.MkdirAll(dir, 0755)
 		}
-		f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 		if err == nil {
 			l.logFile = f
 			l.filePrintf("[START] ReconX scan started at %s\n", time.Now().Format(time.RFC3339))
@@ -176,7 +176,17 @@ func (l *Logger) Tool(name, target string) {
 func (l *Logger) ToolCmd(name string, args []string, stdin string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	cmdStr := name + " " + strings.Join(args, " ")
+	safe := append([]string{}, args...)
+	for i, a := range safe {
+		lower := strings.ToLower(a)
+		if strings.Contains(lower, "token=") || strings.Contains(lower, "key=") {
+			safe[i] = strings.SplitN(a, "=", 2)[0] + "=[REDACTED]"
+		}
+		if (a == "-H" || strings.Contains(lower, "token") || strings.Contains(lower, "key")) && !strings.Contains(a, "=") && i+1 < len(safe) {
+			safe[i+1] = "[REDACTED]"
+		}
+	}
+	cmdStr := name + " " + strings.Join(safe, " ")
 	if stdin != "" && len(stdin) < 100 {
 		cmdStr += " <<< '" + stdin + "'"
 	} else if stdin != "" {
@@ -266,6 +276,7 @@ func (l *Logger) Finding(severity, name, target string) {
 
 // Secret logs a discovered secret/credential
 func (l *Logger) Secret(secretType, source, hint string) {
+	hint = "[REDACTED]"
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	fmt.Printf("  %s %s [%s] from %s — %s\n",
@@ -478,9 +489,9 @@ func (s *Spinner) run() {
 			return
 		case <-ticker.C:
 			elapsed := time.Since(s.start).Round(time.Second)
-			spin  := c(cyan, spinFrames[frame%len(spinFrames)])
-			name  := c(cyan, fmt.Sprintf("%-20s", s.name))
-			tgt   := c(hBlack, s.target)
+			spin := c(cyan, spinFrames[frame%len(spinFrames)])
+			name := c(cyan, fmt.Sprintf("%-20s", s.name))
+			tgt := c(hBlack, s.target)
 			elaps := c(hBlack, fmt.Sprintf("(%s)", elapsed))
 
 			if s.counter != nil {

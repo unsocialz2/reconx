@@ -2,14 +2,14 @@
 dist/
 web/.next/
 web/node_modules/
-reconx
+/reconx
 
 # Scan output
-output/
-scans/
+/output/
+/scans/
 reconx-output/
 test-*/
-results/
+/results/
 *.log
 
 # IDE & OS
@@ -26,3 +26,6 @@ Thumbs.db
 
 # Temporary files
 target.txt
+
+web/data/
+web/*.tsbuildinfo

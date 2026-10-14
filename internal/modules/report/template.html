@@ -118,6 +118,7 @@ tr:hover td{background:rgba(88,166,255,.04)}
   <a class="nav-item" data-nav="js" onclick="showPage('js')">📜 JS Files <span class="nav-badge">{{.TotalJSFiles}}</span></a>
   <div class="nav-section">Findings</div>
   <a class="nav-item" data-nav="vulns" onclick="showPage('vulns')">🚨 Vulnerabilities <span class="nav-badge">{{.TotalFindings}}</span></a>
+  <a class="nav-item" data-nav="coverage" onclick="showPage('coverage')">Coverage &amp; additional results</a>
   <a class="nav-item" data-nav="secrets" onclick="showPage('secrets')">🔐 Secrets <span class="nav-badge">{{.TotalSecrets}}</span></a>
 </aside>
 
@@ -421,6 +422,16 @@ tr:hover td{background:rgba(88,166,255,.04)}
       </tbody>
     </table>
   </div>
+</section>
+
+<section id="coverage" class="page">
+ <div class="section-title">Coverage &amp; additional results</div>
+ <p>Scanner matches and policy observations require impact validation. A skipped or partial phase is not a clean result.</p>
+ <h3>Phase status</h3><table><thead><tr><th>Phase</th><th>Status</th><th>Reason</th></tr></thead><tbody>{{range .Phases}}<tr><td>{{.Name}}</td><td>{{.Status}}</td><td>{{.Reason}}</td></tr>{{end}}</tbody></table>
+ <h3>Coverage limitations</h3><ul>{{range .Coverage}}<li>{{.}}</li>{{end}}</ul>
+ <h3>Directory results ({{len .Directories}})</h3><table><thead><tr><th>URL</th><th>Status</th><th>Tool</th></tr></thead><tbody>{{range .Directories}}<tr><td>{{.URL}}</td><td>{{.StatusCode}}</td><td>{{.Tool}}</td></tr>{{end}}</tbody></table>
+ <h3>Explicit cloud assets ({{len .CloudAssets}})</h3><table><thead><tr><th>URL</th><th>Observation</th></tr></thead><tbody>{{range .CloudAssets}}<tr><td>{{.URL}}</td><td>{{.Status}}</td></tr>{{end}}</tbody></table>
+ <h3>CORS candidates ({{len .CORSCandidates}})</h3><table><thead><tr><th>URL</th><th>Origin</th><th>ACAO</th><th>ACAC</th><th>Observation</th></tr></thead><tbody>{{range .CORSCandidates}}<tr><td>{{.URL}}</td><td>{{.Origin}}</td><td>{{.ACAO}}</td><td>{{.ACAC}}</td><td>{{.Description}}</td></tr>{{end}}</tbody></table>
 </section>
 
 <!-- ── Secrets ── -->

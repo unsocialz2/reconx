@@ -43,7 +43,6 @@ func TestGuessPortService(t *testing.T) {
 	}
 }
 
-
 func TestExtractDomainFromResumeDir(t *testing.T) {
 	cases := []struct {
 		dir  string

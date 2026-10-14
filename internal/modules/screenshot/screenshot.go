@@ -1,17 +1,17 @@
 package screenshot
 
 import (
-"context"
-"fmt"
-"os"
-"path/filepath"
-"strings"
-"time"
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
 
-"github.com/reconx/reconx/internal/config"
-"github.com/reconx/reconx/internal/store"
-"github.com/reconx/reconx/pkg/logger"
-"github.com/reconx/reconx/pkg/runner"
+	"github.com/unsocialz2/reconx/internal/config"
+	"github.com/unsocialz2/reconx/internal/store"
+	"github.com/unsocialz2/reconx/pkg/logger"
+	"github.com/unsocialz2/reconx/pkg/runner"
 )
 
 // Module takes screenshots of live hosts using gowitness.
@@ -39,9 +39,9 @@ func (m *Module) Run(ctx context.Context) error {
 	}
 
 	tool := "gowitness"
-	if !runner.IsAvailable(tool) {
+	if !m.cfg.ToolAvailable(tool) {
 		m.log.ToolSkipped(tool,
-"not found — install: go install github.com/sensepost/gowitness@latest")
+			"not found — install: go install github.com/sensepost/gowitness@latest")
 		return nil
 	}
 
@@ -127,7 +127,7 @@ func (m *Module) Run(ctx context.Context) error {
 	if r.IsTimeout() {
 		m.log.ToolTimeout("gowitness", organized, budget)
 	} else if r.Err != nil && organized == 0 {
-		m.log.ToolError("gowitness", fmt.Errorf(r.DiagString()), r.Stderr)
+		m.log.ToolError("gowitness", fmt.Errorf("%s", r.DiagString()), r.Stderr)
 	} else {
 		m.log.ToolDone("gowitness", organized, time.Since(start))
 		m.log.Info("Screenshots → %s/ (%d domains)", ssRoot, organized)
@@ -187,7 +187,8 @@ func (m *Module) organizeByDomain(srcDir, dstRoot string) int {
 
 // parseDomainFromFilename extracts the domain from gowitness filenames.
 // gowitness v3 format: https---sub.example.com-443.png (or .jpeg)
-//             or v2:   https-sub.example.com-443.png
+//
+//	or v2:   https-sub.example.com-443.png
 func parseDomainFromFilename(name string) string {
 	// Strip extension
 	base := name

@@ -1,9 +1,9 @@
 package params
 
 import (
-"net/url"
-"sort"
-"strings"
+	"net/url"
+	"sort"
+	"strings"
 )
 
 // ExtractParamsFromURL parses a URL and returns all query parameter keys found.

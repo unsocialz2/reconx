@@ -1,54 +1,57 @@
 package vuln
 
 import (
-        "context"
-        "fmt"
-        "strings"
-        "time"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
 
-        "github.com/reconx/reconx/internal/config"
-        "github.com/reconx/reconx/internal/store"
-        "github.com/reconx/reconx/pkg/logger"
-        "github.com/reconx/reconx/pkg/runner"
-        "github.com/reconx/reconx/pkg/util"
+	"github.com/unsocialz2/reconx/internal/config"
+	"github.com/unsocialz2/reconx/internal/store"
+	"github.com/unsocialz2/reconx/pkg/logger"
+	"github.com/unsocialz2/reconx/pkg/runner"
+	"github.com/unsocialz2/reconx/pkg/util"
 )
 
 type Module struct {
-        cfg    *config.Config
-        store  *store.Store
-        log    *logger.Logger
-        outDir string
+	cfg    *config.Config
+	store  *store.Store
+	log    *logger.Logger
+	outDir string
 }
 
 func New(cfg *config.Config, st *store.Store, log *logger.Logger, outDir string) *Module {
-        return &Module{cfg: cfg, store: st, log: log, outDir: outDir}
+	return &Module{cfg: cfg, store: st, log: log, outDir: outDir}
 }
 
 func (m *Module) Run(ctx context.Context) error {
-        m.log.Phase("Vulnerability Scanning",
-                "nuclei templates: exposures, CVEs, misconfigs, takeovers, default-logins")
+	m.log.Phase("Vulnerability Scanning",
+		"nuclei templates: exposures, CVEs, misconfigs, takeovers, default-logins")
 
-        start := time.Now()
-        hosts := m.store.GetHosts()
-        if len(hosts) == 0 {
-                m.log.Warn("No live hosts to scan — vuln scanning skipped")
-                return nil
-        }
+	start := time.Now()
+	hosts := m.store.GetHosts()
+	if len(hosts) == 0 {
+		m.log.Warn("No live hosts to scan — vuln scanning skipped")
+		return nil
+	}
 
-        tcfg := m.cfg.Tools["nuclei"]
-        nucleiPath := "nuclei"
-        if tcfg.Path != "" {
-                nucleiPath = tcfg.Path
-        }
+	tcfg := m.cfg.Tools["nuclei"]
+	nucleiPath := "nuclei"
+	if tcfg.Path != "" {
+		nucleiPath = tcfg.Path
+	}
 
-        if !runner.IsAvailable(nucleiPath) {
-                m.log.ToolSkipped("nuclei",
-                        "binary not found — install: go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest")
-                m.log.Info("After installing: nuclei -update-templates")
-                return nil
-        }
+	if !m.cfg.ToolAvailable(nucleiPath) {
+		m.log.ToolSkipped("nuclei",
+			"binary not found — install: go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest")
+		m.log.Info("After installing: nuclei -update-templates")
+		return nil
+	}
 
-        m.log.Debug("nuclei version: %s (path: %s)", runner.Version(nucleiPath), runner.WhichPath(nucleiPath))
+	m.log.Debug("nuclei version: %s (path: %s)", runner.Version(nucleiPath), runner.WhichPath(nucleiPath))
 
 	// Build target lists separated by WAF status
 	allURLs := make([]string, 0, len(hosts))
@@ -170,6 +173,10 @@ func (m *Module) Run(ctx context.Context) error {
 			catFindings := 0
 			parseErrors := 0
 
+			rawFile, openErr := os.OpenFile(filepath.Join(dataDir, "nuclei_"+g.label+"_"+cat.name+".jsonl"), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+			if openErr != nil {
+				return openErr
+			}
 			r := runner.Run(ctx, nucleiPath, args,
 				runner.WithTimeout(catTimeout),
 				runner.WithHardTimeout(catTimeout),
@@ -186,6 +193,10 @@ func (m *Module) Run(ctx context.Context) error {
 					if line == "" || !strings.HasPrefix(line, "{") {
 						return
 					}
+					if _, err := fmt.Fprintln(rawFile, line); err != nil {
+						parseErrors++
+						return
+					}
 					f := parseNucleiLine(line)
 					if f == nil {
 						parseErrors++
@@ -197,11 +208,14 @@ func (m *Module) Run(ctx context.Context) error {
 					m.log.Finding(f.Severity, f.Name, f.Target)
 				}))
 
+			if err := rawFile.Close(); err != nil {
+				return err
+			}
 			if r.IsTimeout() {
 				m.log.ToolTimeout(toolTag, catFindings, catTimeout)
 			} else if r.Err != nil && catFindings == 0 {
 				if len(r.Stderr) > 0 {
-					m.log.ToolError(toolTag, fmt.Errorf(r.DiagString()), r.Stderr)
+					m.log.ToolError(toolTag, fmt.Errorf("%s", r.DiagString()), r.Stderr)
 				} else {
 					m.log.Debug("nuclei[%s/%s]: no findings (exit %d)", g.label, cat.name, r.ExitCode)
 					m.log.ToolDone(toolTag, 0, time.Since(catStart))
@@ -218,75 +232,75 @@ func (m *Module) Run(ctx context.Context) error {
 
 	m.log.PhaseComplete("Vulnerability Scanning", totalFindings, time.Since(start))
 
-        if totalFindings > 0 {
-                m.logFindingSummary()
-                // Save findings.txt for resume support + downstream tools
-                lines := make([]string, 0, len(m.store.Findings))
-                for _, f := range m.store.Findings {
-                        lines = append(lines, fmt.Sprintf("[%s] %s — %s (%s)",
-                                strings.ToUpper(f.Severity), f.Name, f.Target, f.Template))
-                }
-                if err := store.SaveRaw(m.outDir+"/findings.txt", lines); err != nil {
-                        m.log.Warn("Could not save findings.txt: %v", err)
-                }
-        }
-        return nil
+	if totalFindings > 0 {
+		m.logFindingSummary()
+		// Save findings.txt for resume support + downstream tools
+		lines := make([]string, 0, len(m.store.Findings))
+		for _, f := range m.store.Findings {
+			lines = append(lines, fmt.Sprintf("[%s] %s — %s (%s)",
+				strings.ToUpper(f.Severity), f.Name, f.Target, f.Template))
+		}
+		if err := store.SaveRaw(m.outDir+"/findings.txt", lines); err != nil {
+			m.log.Warn("Could not save findings.txt: %v", err)
+		}
+	}
+	return nil
 }
 
 func (m *Module) logFindingSummary() {
-        counts := map[string]int{}
-        for _, f := range m.store.Findings {
-                counts[strings.ToLower(f.Severity)]++
-        }
-        parts := []string{}
-        for _, sev := range []string{"critical", "high", "medium", "low"} {
-                if n := counts[sev]; n > 0 {
-                        parts = append(parts, fmt.Sprintf("%s:%d", strings.ToUpper(sev), n))
-                }
-        }
-        if len(parts) > 0 {
-                m.log.Info("Finding severity breakdown: %s", strings.Join(parts, "  "))
-        }
+	counts := map[string]int{}
+	for _, f := range m.store.Findings {
+		counts[strings.ToLower(f.Severity)]++
+	}
+	parts := []string{}
+	for _, sev := range []string{"critical", "high", "medium", "low"} {
+		if n := counts[sev]; n > 0 {
+			parts = append(parts, fmt.Sprintf("%s:%d", strings.ToUpper(sev), n))
+		}
+	}
+	if len(parts) > 0 {
+		m.log.Info("Finding severity breakdown: %s", strings.Join(parts, "  "))
+	}
 }
 
 func parseNucleiLine(line string) *store.Finding {
-        if !strings.Contains(line, "template-id") && !strings.Contains(line, "templateID") {
-                return nil
-        }
-
-        // Name: prefer info.name over template-id
-        name := util.JsonStr(line, "name")
-        if name == "" {
-                name = util.JsonStr(line, "template-id")
-        }
-        if name == "" {
-                name = util.JsonStr(line, "templateID")
-        }
-        if name == "" {
-                return nil
-        }
-
-        severity := strings.ToLower(util.JsonStr(line, "severity"))
-        // Discard purely informational findings, technology fingerprints, and unknown severities.
-        // The vulnerability report only tracks actionable security issues (critical, high, medium, low).
-        if severity == "" || severity == "info" || severity == "unknown" {
-                return nil
-        }
-
-        target := util.JsonStr(line, "matched-at")
-        if target == "" {
-                target = util.JsonStr(line, "host")
-        }
-        if target == "" {
-                target = util.JsonStr(line, "url")
-        }
-
-        return &store.Finding{
-                Name:     name,
-                Severity: severity,
-                Target:   target,
-                Template: util.JsonStr(line, "template-id"),
-        }
+	var result struct {
+		Template   string `json:"template-id"`
+		TemplateID string `json:"templateID"`
+		Info       struct {
+			Name        string `json:"name"`
+			Severity    string `json:"severity"`
+			Description string `json:"description"`
+		} `json:"info"`
+		MatchedAt string `json:"matched-at"`
+		Host      string `json:"host"`
+		URL       string `json:"url"`
+	}
+	if json.Unmarshal([]byte(line), &result) != nil {
+		return nil
+	}
+	if result.Template == "" {
+		result.Template = result.TemplateID
+	}
+	if result.Template == "" {
+		return nil
+	}
+	severity := strings.ToLower(result.Info.Severity)
+	switch severity {
+	case "critical", "high", "medium", "low":
+	default:
+		return nil
+	}
+	name := result.Info.Name
+	if name == "" {
+		name = result.Template
+	}
+	target := result.MatchedAt
+	if target == "" {
+		target = result.Host
+	}
+	if target == "" {
+		target = result.URL
+	}
+	return &store.Finding{Name: name, Severity: severity, Target: target, Template: result.Template, Description: result.Info.Description, Evidence: line}
 }
-
-

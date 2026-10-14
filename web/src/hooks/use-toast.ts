@@ -1,15 +1,18 @@
-import * as React from "react";
-
-type ToastProps = {
-  title?: string;
-  description?: string;
-  variant?: "default" | "destructive";
-};
-
+import { toast as notify } from "sonner";
 export function useToast() {
-  const toast = React.useCallback(({ title, description }: ToastProps) => {
-    console.log(`[Toast] ${title}: ${description}`);
-  }, []);
-
-  return { toast, toasts: [] };
+  return {
+    toast: ({
+      title,
+      description,
+      variant,
+    }: {
+      title?: string;
+      description?: string;
+      variant?: "default" | "destructive";
+    }) =>
+      variant === "destructive"
+        ? notify.error(title, { description })
+        : notify(title, { description }),
+    toasts: [],
+  };
 }

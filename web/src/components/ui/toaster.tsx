@@ -1,5 +1,5 @@
-import * as React from "react";
-
+"use client";
+import { Toaster as Sonner } from "sonner";
 export function Toaster() {
-  return null;
+  return <Sonner theme="dark" richColors position="bottom-right" />;
 }

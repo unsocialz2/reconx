@@ -3,6 +3,11 @@ package alive
 import (
 	"context"
 	"fmt"
+	"github.com/unsocialz2/reconx/internal/scope"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -10,11 +15,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/reconx/reconx/internal/config"
-	"github.com/reconx/reconx/internal/store"
-	"github.com/reconx/reconx/pkg/logger"
-	"github.com/reconx/reconx/pkg/runner"
-	"github.com/reconx/reconx/pkg/util"
+	"github.com/unsocialz2/reconx/internal/config"
+	"github.com/unsocialz2/reconx/internal/store"
+	"github.com/unsocialz2/reconx/pkg/logger"
+	"github.com/unsocialz2/reconx/pkg/runner"
+	"github.com/unsocialz2/reconx/pkg/util"
 )
 
 var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
@@ -25,15 +30,15 @@ func stripAnsi(s string) string {
 
 // Module probes discovered subdomains for live HTTP/S hosts
 type Module struct {
-        cfg    *config.Config
-        store  *store.Store
-        log    *logger.Logger
-        outDir string
+	cfg    *config.Config
+	store  *store.Store
+	log    *logger.Logger
+	outDir string
 }
 
 // New creates an alive-check module
 func New(cfg *config.Config, st *store.Store, log *logger.Logger, outDir string) *Module {
-        return &Module{cfg: cfg, store: st, log: log, outDir: outDir}
+	return &Module{cfg: cfg, store: st, log: log, outDir: outDir}
 }
 
 // Run probes all discovered subdomains
@@ -41,11 +46,11 @@ func (m *Module) Run(ctx context.Context) error {
 	m.log.Phase("Alive Host Detection",
 		"Probing all subdomains — status code, title, server, tech fingerprint")
 
-	subs := m.store.GetSubdomains()
+	subs := scope.New(m.cfg).FilterList(m.store.GetSubdomains())
 	if len(subs) == 0 {
 		// If subdomain enum was skipped (single target mode / --skip-subs), use Target.Domains
 		if len(m.cfg.Target.Domains) > 0 {
-			subs = m.cfg.Target.Domains
+			subs = scope.New(m.cfg).FilterList(m.cfg.Target.Domains)
 			m.store.AddSubdomains(subs)
 			m.log.Info("Single target mode / Subdomains skipped: Probing %d target domains directly...", len(subs))
 		} else {
@@ -63,7 +68,7 @@ func (m *Module) Run(ctx context.Context) error {
 	}
 
 	var err error
-	if !runner.IsAvailable(httpxPath) {
+	if !m.cfg.ToolAvailable(httpxPath) {
 		m.log.ToolSkipped("httpx", fmt.Sprintf("binary '%s' not found in PATH — falling back to curl", httpxPath))
 		err = m.runCurlFallback(ctx, subs)
 	} else {
@@ -92,185 +97,200 @@ func (m *Module) Run(ctx context.Context) error {
 	// Checks all discovered subdomains for dangling CNAMEs (AWS S3, GitHub Pages, Heroku, etc.)
 	m.runSubjack(ctx)
 
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	return err
 }
 
 func (m *Module) runHttpx(ctx context.Context, subs []string, path string, tcfg config.ToolConfig) error {
-        input := strings.Join(subs, "\n")
-        start := time.Now()
+	input := strings.Join(subs, "\n")
+	start := time.Now()
 
-        // Minimal safe flag set that works across httpx versions
-        args := []string{
-                "-silent",
-                "-json",
-                "-follow-redirects",
-                "-threads", "50",
-                "-timeout", "10",
-                "-retries", "2",
-                "-status-code",
-                "-title",
-                "-web-server",
-                "-content-length",
-                "-tech-detect",
-                "-favicon",
-        }
+	// Minimal safe flag set that works across httpx versions
+	args := []string{
+		"-silent",
+		"-json",
+		"-nf",
+		"-threads", "50",
+		"-timeout", "10",
+		"-retries", "2",
+		"-status-code",
+		"-title",
+		"-web-server",
+		"-content-length",
+		"-tech-detect",
+		"-favicon",
+	}
 
-        m.log.Tool("httpx", fmt.Sprintf("%d subdomains", len(subs)))
-        m.log.ToolCmd("httpx", args, fmt.Sprintf("[%d subdomains via stdin]", len(subs)))
+	m.log.Tool("httpx", fmt.Sprintf("%d subdomains", len(subs)))
+	m.log.ToolCmd("httpx", args, fmt.Sprintf("[%d subdomains via stdin]", len(subs)))
 
-        var (
-                mu          sync.Mutex
-                liveCount   int
-                parseErrors int
-                httpxErrors []string
-        )
-        board := m.log.NewProgressBoard()
-        board.Register("httpx", fmt.Sprintf("%d subdomains", len(subs)))
+	var (
+		mu          sync.Mutex
+		liveCount   int
+		parseErrors int
+		httpxErrors []string
+	)
+	board := m.log.NewProgressBoard()
+	board.Register("httpx", fmt.Sprintf("%d subdomains", len(subs)))
 
-        // Live totals in the summary header
-        board.SetLiveStats(func() map[string]int {
-                stats := m.store.Stats()
-                return map[string]int{
-                        "subdomains": stats["subdomains"],
-                        "live_hosts": stats["live_hosts"],
-                        "urls":       stats["urls"],
-                        "findings":   stats["findings"],
-                        "secrets":    stats["secrets"],
-                }
-        })
+	// Live totals in the summary header
+	board.SetLiveStats(func() map[string]int {
+		stats := m.store.Stats()
+		return map[string]int{
+			"subdomains": stats["subdomains"],
+			"live_hosts": stats["live_hosts"],
+			"urls":       stats["urls"],
+			"findings":   stats["findings"],
+			"secrets":    stats["secrets"],
+		}
+	})
 
-        r := runner.Run(ctx, path, args,
-                runner.WithStdin(input),
-                runner.WithTimeout(time.Duration(tcfg.Timeout)*time.Second),
-                runner.WithStderrCallback(func(line string) {
-                        // httpx writes non-fatal warnings to stderr — log them as debug
-                        m.log.Debug("httpx stderr: %s", line)
-                        mu.Lock()
-                        httpxErrors = append(httpxErrors, line)
-                        mu.Unlock()
-                        // Heartbeat — keeps the board from showing httpx as "stuck"
-                        // while it's actively probing hosts that don't respond.
-                        board.Heartbeat("httpx")
-                }),
-                runner.WithLineCallback(func(line string) {
-                        line = strings.TrimSpace(line)
-                        if line == "" || !strings.HasPrefix(line, "{") {
-                                // httpx sometimes writes banner lines before JSON — skip them
-                                m.log.Debug("httpx non-JSON line: %s", line)
-                                return
-                        }
-                        host := parseHTTPXLine(line)
-                        if host == nil {
-                                parseErrors++
-                                m.log.Debug("httpx: failed to parse JSON line: %s", util.Truncate(line, 120))
-                                return
-                        }
-                        m.store.AddHost(host)
-                        mu.Lock()
-                        liveCount++
-                        mu.Unlock()
-                        board.Update("httpx", liveCount)
-                        m.log.LiveHost(host.Domain, host.StatusCode, host.Title, host.Server)
-                }),
-        )
+	r := runner.Run(ctx, path, args,
+		runner.WithStdin(input),
+		runner.WithTimeout(time.Duration(tcfg.Timeout)*time.Second),
+		runner.WithStderrCallback(func(line string) {
+			// httpx writes non-fatal warnings to stderr — log them as debug
+			m.log.Debug("httpx stderr: %s", line)
+			mu.Lock()
+			httpxErrors = append(httpxErrors, line)
+			mu.Unlock()
+			// Heartbeat — keeps the board from showing httpx as "stuck"
+			// while it's actively probing hosts that don't respond.
+			board.Heartbeat("httpx")
+		}),
+		runner.WithLineCallback(func(line string) {
+			line = strings.TrimSpace(line)
+			if line == "" || !strings.HasPrefix(line, "{") {
+				// httpx sometimes writes banner lines before JSON — skip them
+				m.log.Debug("httpx non-JSON line: %s", line)
+				return
+			}
+			host := parseHTTPXLine(line)
+			if host == nil {
+				parseErrors++
+				m.log.Debug("httpx: failed to parse JSON line: %s", util.Truncate(line, 120))
+				return
+			}
+			if !scope.New(m.cfg).IsInScope(host.Meta["url"]) {
+				return
+			}
+			m.store.AddHost(host)
+			mu.Lock()
+			liveCount++
+			mu.Unlock()
+			board.Update("httpx", liveCount)
+			m.log.LiveHost(host.Domain, host.StatusCode, host.Title, host.Server)
+		}),
+	)
 
-        elapsed := time.Since(start)
+	elapsed := time.Since(start)
 
-        if r.IsTimeout() {
-                board.Timeout("httpx", liveCount)
-                m.log.ToolTimeout("httpx", liveCount, time.Duration(tcfg.Timeout)*time.Second)
-        } else if r.Err != nil && liveCount == 0 {
-                // httpx exits non-zero when 0 hosts respond — check stderr for real errors
-                m.log.ToolError("httpx", fmt.Errorf(r.DiagString()), r.Stderr)
-                m.log.Warn("httpx returned 0 live hosts — possible issues:")
-                m.log.Warn("  1. All %d subdomains are actually dead/unreachable", len(subs))
-                m.log.Warn("  2. httpx flags incompatible with installed version (%s)", runner.Version(path))
-                m.log.Warn("  3. Network connectivity issue — try: curl -s https://%s", subs[0])
-                m.log.Warn("  Check %s/reconx.log for full stderr output", m.outDir)
-        } else {
-                board.Done("httpx", liveCount)
-                m.log.ToolDone("httpx", liveCount, elapsed)
-                if parseErrors > 0 {
-                        m.log.Warn("httpx: %d JSON parse errors — check reconx.log for details", parseErrors)
-                }
-        }
+	if r.IsTimeout() {
+		board.Timeout("httpx", liveCount)
+		m.log.ToolTimeout("httpx", liveCount, time.Duration(tcfg.Timeout)*time.Second)
+	} else if r.Err != nil && liveCount == 0 {
+		// httpx exits non-zero when 0 hosts respond — check stderr for real errors
+		m.log.ToolError("httpx", fmt.Errorf("%s", r.DiagString()), r.Stderr)
+		m.log.Warn("httpx returned 0 live hosts — possible issues:")
+		m.log.Warn("  1. All %d subdomains are actually dead/unreachable", len(subs))
+		m.log.Warn("  2. httpx flags incompatible with installed version (%s)", runner.Version(path))
+		m.log.Warn("  3. Network connectivity issue — try: curl -s https://%s", subs[0])
+		m.log.Warn("  Check %s/reconx.log for full stderr output", m.outDir)
+	} else {
+		board.Done("httpx", liveCount)
+		m.log.ToolDone("httpx", liveCount, elapsed)
+		if parseErrors > 0 {
+			m.log.Warn("httpx: %d JSON parse errors — check reconx.log for details", parseErrors)
+		}
+	}
 
-        m.log.Debug("httpx stats: %d probed → %d live (%.1f%% hit rate)",
-                len(subs), liveCount, float64(liveCount)/float64(len(subs))*100)
+	m.log.Debug("httpx stats: %d probed → %d live (%.1f%% hit rate)",
+		len(subs), liveCount, float64(liveCount)/float64(len(subs))*100)
 
-        board.Stop()
-        return m.saveAlive()
+	board.Stop()
+	return m.saveAlive()
 }
 
 // runCurlFallback probes hosts with curl when httpx isn't installed
+// runCurlFallback is retained as the fallback entry point; probes use a scoped Go client.
 func (m *Module) runCurlFallback(ctx context.Context, subs []string) error {
-        if !runner.IsAvailable("curl") {
-                m.log.Warn("Neither httpx nor curl found — install httpx: go install github.com/projectdiscovery/httpx/cmd/httpx@latest")
-                return nil
-        }
+	var endpoints []string
+	for _, sub := range subs {
+		for _, scheme := range []string{"https", "http"} {
+			endpoints = append(endpoints, scheme+"://"+sub)
+		}
+	}
+	return m.probeEndpoints(ctx, endpoints)
+}
+func (m *Module) probeEndpoints(ctx context.Context, endpoints []string) error {
+	filter := scope.New(m.cfg)
+	client := filter.Client(10 * time.Second)
+	// A live redirect is evidence about the original endpoint, not permission to probe its destination.
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	workers := m.cfg.Workers
+	if workers < 1 {
+		workers = 1
+	}
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	for _, raw := range endpoints {
+		if !filter.IsInScope(raw) {
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case sem <- struct{}{}:
+		}
+		wg.Add(1)
+		go func(raw string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			req, err := http.NewRequestWithContext(ctx, "GET", raw, nil)
+			if err != nil {
+				return
+			}
+			req.Header.Set("User-Agent", "ReconX/1.1")
+			if parts := strings.SplitN(m.cfg.BugBountyHeader, ":", 2); len(parts) == 2 {
+				req.Header.Set(strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]))
+			}
+			resp, err := client.Do(req)
+			if err != nil {
+				return
+			}
+			defer resp.Body.Close()
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+			u, _ := url.Parse(raw)
+			port, _ := strconv.Atoi(u.Port())
+			h := &store.Host{Domain: u.Hostname(), Port: port, StatusCode: resp.StatusCode, Server: resp.Header.Get("Server"), Meta: map[string]string{"url": raw}}
+			tagHost(h)
+			m.store.AddHost(h)
+			m.log.LiveHost(h.Domain, h.StatusCode, "", h.Server)
+		}(raw)
+	}
+	wg.Wait()
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return m.saveAlive()
+}
 
-        start := time.Now()
-        m.log.Tool("curl-probe", fmt.Sprintf("%d subdomains (concurrency: 30)", len(subs)))
-
-        type probeResult struct {
-                domain string
-                status int
-                server string
-        }
-
-        sem     := make(chan struct{}, 30)
-        results := make(chan probeResult, len(subs))
-
-        for _, sub := range subs {
-                sub := sub
-                go func() {
-                        sem <- struct{}{}
-                        defer func() { <-sem }()
-
-                        for _, scheme := range []string{"https", "http"} {
-                                url := scheme + "://" + sub
-                                r := runner.Run(ctx, "curl",
-                                        []string{
-                                                "-s", "-o", "/dev/null",
-                                                "-w", "%{http_code}|||%{url_effective}",
-                                                "--max-time", "8",
-                                                "--connect-timeout", "5",
-                                                "-L", "--max-redirs", "3",
-                                                "-A", "Mozilla/5.0 (reconx)",
-                                                url,
-                                        },
-                                        runner.WithTimeout(12*time.Second))
-
-                                if r.Err == nil && len(r.Lines) > 0 {
-                                        parts := strings.SplitN(r.Lines[0], "|||", 2)
-                                        code, _ := strconv.Atoi(strings.TrimSpace(parts[0]))
-                                        if code > 0 {
-                                                results <- probeResult{domain: sub, status: code}
-                                                return
-                                        }
-                                }
-                        }
-                        results <- probeResult{}
-                }()
-        }
-
-        liveCount := 0
-        for range subs {
-                if res := <-results; res.domain != "" {
-                        h := &store.Host{
-                                Domain:     res.domain,
-                                StatusCode: res.status,
-                                Meta:       map[string]string{"url": "https://" + res.domain},
-                        }
-                        tagHost(h)
-                        m.store.AddHost(h)
-                        liveCount++
-                        m.log.LiveHost(res.domain, res.status, "", "")
-                }
-        }
-
-        m.log.ToolDone("curl-probe", liveCount, time.Since(start))
-        return m.saveAlive()
+// ProbePorts closes the port-discovery feedback loop without overwriting existing endpoints.
+func (m *Module) ProbePorts(ctx context.Context) error {
+	var endpoints []string
+	for _, p := range m.store.Snapshot().Ports {
+		host := net.JoinHostPort(p.Host, strconv.Itoa(p.Port))
+		switch p.Port {
+		case 80, 443, 3000, 5000, 8000, 8008, 8080, 8081, 8443, 8888, 9000, 9090:
+			for _, scheme := range []string{"https", "http"} {
+				endpoints = append(endpoints, scheme+"://"+host)
+			}
+		}
+	}
+	return m.probeEndpoints(ctx, endpoints)
 }
 
 func (m *Module) saveAlive() error {
@@ -312,116 +332,113 @@ func (m *Module) saveAliveWAFSplit() {
 // parseHTTPXLine parses a httpx -json output line
 // Handles schema differences between httpx versions
 func parseHTTPXLine(line string) *store.Host {
-        if !strings.Contains(line, "{") {
-                return nil
-        }
+	if !strings.Contains(line, "{") {
+		return nil
+	}
 
-        host := &store.Host{Meta: make(map[string]string)}
+	host := &store.Host{Meta: make(map[string]string)}
 
-        rawURL := firstOf(line, "url", "URL", "input", "Input")
-        if rawURL == "" {
-                return nil
-        }
-        host.Meta["url"] = rawURL
+	rawURL := firstOf(line, "url", "URL", "input", "Input")
+	if rawURL == "" {
+		return nil
+	}
+	host.Meta["url"] = rawURL
 
-        // Clean to hostname
-        clean := rawURL
-        for _, p := range []string{"https://", "http://"} {
-                clean = strings.TrimPrefix(clean, p)
-        }
-        if idx := strings.IndexAny(clean, "/?#"); idx != -1 {
-                clean = clean[:idx]
-        }
-        if idx := strings.LastIndex(clean, ":"); idx > 0 {
-                portStr := clean[idx+1:]
-                if p, err := strconv.Atoi(portStr); err == nil {
-                        host.Port = p
-                        clean = clean[:idx]
-                }
-        }
-        host.Domain = strings.ToLower(strings.TrimSpace(clean))
-        if host.Domain == "" {
-                return nil
-        }
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		return nil
+	}
+	if parsedURL.Host == "" {
+		parsedURL, err = url.Parse("https://" + rawURL)
+		if err != nil {
+			return nil
+		}
+	}
+	host.Domain = strings.ToLower(parsedURL.Hostname())
+	host.Port, _ = strconv.Atoi(parsedURL.Port())
+	host.Meta["url"] = parsedURL.String()
+	if host.Domain == "" {
+		return nil
+	}
 
-        // Status code — multiple possible field names across versions
-        sc := firstOf(line, "status-code", "status_code", "StatusCode", "status")
-        host.StatusCode, _ = strconv.Atoi(sc)
+	// Status code — multiple possible field names across versions
+	sc := firstOf(line, "status-code", "status_code", "StatusCode", "status")
+	host.StatusCode, _ = strconv.Atoi(sc)
 
-        host.Title  = firstOf(line, "title", "Title", "page-title")
-        host.Server = firstOf(line, "webserver", "web-server", "server", "Server")
-        // Clean IP address
-        rawIP := firstOf(line, "a", "ip", "IP")
-        rawIP = strings.Trim(rawIP, `[]"' `)
-        if idx := strings.Index(rawIP, ","); idx > 0 {
-                rawIP = strings.Trim(rawIP[:idx], `[]"' `)
-        }
-        host.IP = rawIP
+	host.Title = firstOf(line, "title", "Title", "page-title")
+	host.Server = firstOf(line, "webserver", "web-server", "server", "Server")
+	// Clean IP address
+	rawIP := firstOf(line, "a", "ip", "IP")
+	rawIP = strings.Trim(rawIP, `[]"' `)
+	if idx := strings.Index(rawIP, ","); idx > 0 {
+		rawIP = strings.Trim(rawIP[:idx], `[]"' `)
+	}
+	host.IP = rawIP
 
-        // Content length
-        cl := firstOf(line, "content-length", "content_length")
-        if cl != "" {
-                host.Meta["content-length"] = cl
-        }
+	// Content length
+	cl := firstOf(line, "content-length", "content_length")
+	if cl != "" {
+		host.Meta["content-length"] = cl
+	}
 
-        // Favicon hash (mmh3 or md5)
-        fav := firstOf(line, "favicon", "favicon-hash", "favicon_hash", "favicon_md5", "fav_md5")
-        if fav != "" {
-                host.Meta["favicon_hash"] = fav
-        }
+	// Favicon hash (mmh3 or md5)
+	fav := firstOf(line, "favicon", "favicon-hash", "favicon_hash", "favicon_md5", "fav_md5")
+	if fav != "" {
+		host.Meta["favicon_hash"] = fav
+	}
 
-        // Tech stack array
-        if idx := strings.Index(line, `"tech":`); idx != -1 {
-                rest := line[idx+7:]
-                if end := strings.Index(rest, "]"); end != -1 {
-                        for _, t := range strings.Split(rest[:end], `"`) {
-                                t = strings.Trim(t, `[]," `)
-                                if t != "" && t != "null" && t != "," {
-                                        host.TechStack = append(host.TechStack, t)
-                                }
-                        }
-                }
-        }
+	// Tech stack array
+	if idx := strings.Index(line, `"tech":`); idx != -1 {
+		rest := line[idx+7:]
+		if end := strings.Index(rest, "]"); end != -1 {
+			for _, t := range strings.Split(rest[:end], `"`) {
+				t = strings.Trim(t, `[]," `)
+				if t != "" && t != "null" && t != "," {
+					host.TechStack = append(host.TechStack, t)
+				}
+			}
+		}
+	}
 
-        // Technologies (newer httpx field name)
-        if idx := strings.Index(line, `"technologies":`); idx != -1 {
-                rest := line[idx+15:]
-                if end := strings.Index(rest, "]"); end != -1 {
-                        for _, t := range strings.Split(rest[:end], `"`) {
-                                t = strings.Trim(t, `[]," `)
-                                if t != "" && t != "null" {
-                                        host.TechStack = append(host.TechStack, t)
-                                }
-                        }
-                }
-        }
+	// Technologies (newer httpx field name)
+	if idx := strings.Index(line, `"technologies":`); idx != -1 {
+		rest := line[idx+15:]
+		if end := strings.Index(rest, "]"); end != -1 {
+			for _, t := range strings.Split(rest[:end], `"`) {
+				t = strings.Trim(t, `[]," `)
+				if t != "" && t != "null" {
+					host.TechStack = append(host.TechStack, t)
+				}
+			}
+		}
+	}
 
-        tagHost(host)
-        return host
+	tagHost(host)
+	return host
 }
 
 func tagHost(h *store.Host) {
-        switch {
-        case h.StatusCode == 403:
-                h.Tags = append(h.Tags, "403-bypass-candidate")
-        case h.StatusCode == 401:
-                h.Tags = append(h.Tags, "auth-required")
-        case h.StatusCode >= 500:
-                h.Tags = append(h.Tags, "server-error")
-        case h.StatusCode == 301 || h.StatusCode == 302:
-                h.Tags = append(h.Tags, "redirect")
-        case h.StatusCode == 200:
-                h.Tags = append(h.Tags, "200-ok")
-        }
+	switch {
+	case h.StatusCode == 403:
+		h.Tags = append(h.Tags, "403-bypass-candidate")
+	case h.StatusCode == 401:
+		h.Tags = append(h.Tags, "auth-required")
+	case h.StatusCode >= 500:
+		h.Tags = append(h.Tags, "server-error")
+	case h.StatusCode == 301 || h.StatusCode == 302:
+		h.Tags = append(h.Tags, "redirect")
+	case h.StatusCode == 200:
+		h.Tags = append(h.Tags, "200-ok")
+	}
 }
 
 func firstOf(s string, keys ...string) string {
-        for _, key := range keys {
-                if v := util.JsonStr(s, key); v != "" {
-                        return v
-                }
-        }
-        return ""
+	for _, key := range keys {
+		if v := util.JsonStr(s, key); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // ── WAF Detection ────────────────────────────────────────────────────────────────────────
@@ -430,97 +447,97 @@ func firstOf(s string, keys ...string) string {
 // Results are stored in alive/waf_results.txt and logged with a prominent warning
 // if any WAFs are detected — this helps tune threading/rate in later fuzzing phases.
 func (m *Module) runWAFDetection(ctx context.Context) {
-        tcfg := m.cfg.Tools["wafw00f"]
-        path := "wafw00f"
-        if tcfg.Path != "" {
-                path = tcfg.Path
-        }
+	tcfg := m.cfg.Tools["wafw00f"]
+	path := "wafw00f"
+	if tcfg.Path != "" {
+		path = tcfg.Path
+	}
 
-        if !runner.IsAvailable(path) {
-                m.log.ToolSkipped("wafw00f", "not found — install: pip3 install wafw00f")
-                return
-        }
+	if !m.cfg.ToolAvailable(path) {
+		m.log.ToolSkipped("wafw00f", "not found — install: pip3 install wafw00f")
+		return
+	}
 
-        aliveFile := m.outDir + "/alive.txt"
-        if _, err := os.Stat(aliveFile); os.IsNotExist(err) {
-                m.log.Debug("wafw00f: alive.txt not found, skipping")
-                return
-        }
+	aliveFile := m.outDir + "/alive.txt"
+	if _, err := os.Stat(aliveFile); os.IsNotExist(err) {
+		m.log.Debug("wafw00f: alive.txt not found, skipping")
+		return
+	}
 
-        outFile := store.DataDir(m.outDir) + "/wafw00f.txt"
-        args := []string{"-i", aliveFile, "-o", outFile, "-a"}
-        timeout := time.Duration(tcfg.Timeout) * time.Second
-        if timeout == 0 {
-                timeout = 5 * time.Minute
-        }
+	outFile := store.DataDir(m.outDir) + "/wafw00f.txt"
+	args := []string{"-i", aliveFile, "-o", outFile, "-a"}
+	timeout := time.Duration(tcfg.Timeout) * time.Second
+	if timeout == 0 {
+		timeout = 5 * time.Minute
+	}
 
-        m.log.Tool("wafw00f", "detecting WAF on all live hosts")
-        m.log.ToolCmd("wafw00f", args, "")
-        start := time.Now()
+	m.log.Tool("wafw00f", "detecting WAF on all live hosts")
+	m.log.ToolCmd("wafw00f", args, "")
+	start := time.Now()
 
-        r := runner.Run(ctx, path, args, runner.WithTimeout(timeout))
+	r := runner.Run(ctx, path, args, runner.WithTimeout(timeout))
 
-        wafCount := 0
-        seenWAF := make(map[string]bool)
-        for _, line := range r.Lines {
-                line = strings.TrimSpace(line)
-                if line == "" {
-                        continue
-                }
-                // wafw00f output: "The site http://... is behind <WAF> WAF."
-                // or:             "No WAF detected"
-                lower := strings.ToLower(line)
-                detected := !strings.Contains(lower, "no waf") &&
-                        !strings.Contains(lower, "generic") &&
-                        strings.Contains(lower, "behind")
+	wafCount := 0
+	seenWAF := make(map[string]bool)
+	for _, line := range r.Lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// wafw00f output: "The site http://... is behind <WAF> WAF."
+		// or:             "No WAF detected"
+		lower := strings.ToLower(line)
+		detected := !strings.Contains(lower, "no waf") &&
+			!strings.Contains(lower, "generic") &&
+			strings.Contains(lower, "behind")
 
-                if detected {
-                        // Extract host and WAF name
-                        host := ""
-                        waf := "unknown"
-                        if idx := strings.Index(line, "http"); idx >= 0 {
-                                rest := line[idx:]
-                                if end := strings.IndexAny(rest, " )"); end > 0 {
-                                        host = rest[:end]
-                                }
-                        }
-                        if idx := strings.Index(lower, "behind "); idx >= 0 {
-                                rest := strings.TrimSpace(line[idx+7:])
-                                if strings.HasPrefix(strings.ToLower(rest), "a ") {
-                                        rest = strings.TrimSpace(rest[2:])
-                                } else if strings.HasPrefix(strings.ToLower(rest), "an ") {
-                                        rest = strings.TrimSpace(rest[3:])
-                                }
-                                if end := strings.IndexAny(rest, " .("); end > 0 {
-                                        waf = rest[:end]
-                                } else {
-                                        waf = rest
-                                }
-                        }
-                        host = strings.TrimSpace(stripAnsi(host))
-                        waf = strings.TrimSpace(stripAnsi(waf))
-                        if host != "" && waf != "" && waf != "a" && waf != "an" {
-                                key := host + ":" + waf
-                                if !seenWAF[key] {
-                                        seenWAF[key] = true
-                                        wafCount++
-                                        m.store.AddWAFResult(&store.WAFResult{Host: host, WAF: waf, Detected: true})
-                                        m.log.Warn("WAF detected: %s — %s", host, waf)
-                                }
-                        }
-                }
-        }
+		if detected {
+			// Extract host and WAF name
+			host := ""
+			waf := "unknown"
+			if idx := strings.Index(line, "http"); idx >= 0 {
+				rest := line[idx:]
+				if end := strings.IndexAny(rest, " )"); end > 0 {
+					host = rest[:end]
+				}
+			}
+			if idx := strings.Index(lower, "behind "); idx >= 0 {
+				rest := strings.TrimSpace(line[idx+7:])
+				if strings.HasPrefix(strings.ToLower(rest), "a ") {
+					rest = strings.TrimSpace(rest[2:])
+				} else if strings.HasPrefix(strings.ToLower(rest), "an ") {
+					rest = strings.TrimSpace(rest[3:])
+				}
+				if end := strings.IndexAny(rest, " .("); end > 0 {
+					waf = rest[:end]
+				} else {
+					waf = rest
+				}
+			}
+			host = strings.TrimSpace(stripAnsi(host))
+			waf = strings.TrimSpace(stripAnsi(waf))
+			if host != "" && waf != "" && waf != "a" && waf != "an" {
+				key := host + ":" + waf
+				if !seenWAF[key] {
+					seenWAF[key] = true
+					wafCount++
+					m.store.AddWAFResult(&store.WAFResult{Host: host, WAF: waf, Detected: true})
+					m.log.Warn("WAF detected: %s — %s", host, waf)
+				}
+			}
+		}
+	}
 
-        if r.Err != nil && wafCount == 0 {
-                m.log.ToolError("wafw00f", fmt.Errorf(r.DiagString()), r.Stderr)
-        } else {
-                m.log.ToolDone("wafw00f", wafCount, time.Since(start))
-                if wafCount > 0 {
-                        m.log.Warn("⚠  %d WAF(s) detected — consider reducing thread counts in dir fuzzing & vuln scan", wafCount)
-                } else {
-                        m.log.Info("wafw00f: no WAFs detected")
-                }
-        }
+	if r.Err != nil && wafCount == 0 {
+		m.log.ToolError("wafw00f", fmt.Errorf("%s", r.DiagString()), r.Stderr)
+	} else {
+		m.log.ToolDone("wafw00f", wafCount, time.Since(start))
+		if wafCount > 0 {
+			m.log.Warn("⚠  %d WAF(s) detected — consider reducing thread counts in dir fuzzing & vuln scan", wafCount)
+		} else {
+			m.log.Info("wafw00f: no WAFs detected")
+		}
+	}
 }
 
 // ── TLS / Certificate info ─────────────────────────────────────────────────────────────────────
@@ -533,91 +550,94 @@ func (m *Module) runWAFDetection(ctx context.Context) {
 // Any new SAN domains found here are added back to store.Subdomains so they
 // can be picked up by the alive check in the next run (or in a resume).
 func (m *Module) runTLSX(ctx context.Context) {
-        tcfg := m.cfg.Tools["tlsx"]
-        path := "tlsx"
-        if tcfg.Path != "" {
-                path = tcfg.Path
-        }
+	tcfg := m.cfg.Tools["tlsx"]
+	path := "tlsx"
+	if tcfg.Path != "" {
+		path = tcfg.Path
+	}
 
-        if !runner.IsAvailable(path) {
-                m.log.ToolSkipped("tlsx", "not found — install: go install github.com/projectdiscovery/tlsx/cmd/tlsx@latest")
-                return
-        }
+	if !m.cfg.ToolAvailable(path) {
+		m.log.ToolSkipped("tlsx", "not found — install: go install github.com/projectdiscovery/tlsx/cmd/tlsx@latest")
+		return
+	}
 
-        aliveFile := m.outDir + "/alive.txt"
-        if _, err := os.Stat(aliveFile); os.IsNotExist(err) {
-                m.log.Debug("tlsx: alive.txt not found, skipping")
-                return
-        }
+	aliveFile := m.outDir + "/alive.txt"
+	if _, err := os.Stat(aliveFile); os.IsNotExist(err) {
+		m.log.Debug("tlsx: alive.txt not found, skipping")
+		return
+	}
 
-        // tlsx writes output to stdout when no -o flag is given.
-        // Previously -o was passed, causing stdout to be empty and LineCallback to receive nothing.
-        // Args: note -san and -cn extract the SAN/CN fields; -silent suppresses banners.
-        args := []string{"-l", aliveFile, "-san", "-cn", "-silent"}
-        // Do NOT append tcfg.Flags here — defaults include -san/-cn/-silent which would duplicate them.
+	// tlsx writes output to stdout when no -o flag is given.
+	// Previously -o was passed, causing stdout to be empty and LineCallback to receive nothing.
+	// Args: note -san and -cn extract the SAN/CN fields; -silent suppresses banners.
+	args := []string{"-l", aliveFile, "-san", "-cn", "-silent"}
+	// Do NOT append tcfg.Flags here — defaults include -san/-cn/-silent which would duplicate them.
 
-        timeout := time.Duration(tcfg.Timeout) * time.Second
-        if timeout == 0 {
-                timeout = 5 * time.Minute
-        }
+	timeout := time.Duration(tcfg.Timeout) * time.Second
+	if timeout == 0 {
+		timeout = 5 * time.Minute
+	}
 
-        m.log.Tool("tlsx", "extracting TLS certificate SANs and CNs")
-        m.log.ToolCmd("tlsx", args, "")
-        start := time.Now()
+	m.log.Tool("tlsx", "extracting TLS certificate SANs and CNs")
+	m.log.ToolCmd("tlsx", args, "")
+	start := time.Now()
 
-        newSubs := 0
-        r := runner.Run(ctx, path, args,
-                runner.WithTimeout(timeout),
-                runner.WithLineCallback(func(line string) {
-                        line = strings.TrimSpace(line)
-                        if line == "" || strings.HasPrefix(line, "#") {
-                                return
-                        }
-                        // tlsx output format: "host:port [san1 san2 ...]"
-                        // Extract the bracketed SANs when present, otherwise treat whole line as domain
-                        var candidates []string
-                        if idx := strings.Index(line, "["); idx >= 0 {
-                                inner := line[idx+1:]
-                                if end := strings.Index(inner, "]"); end >= 0 {
-                                        inner = inner[:end]
-                                }
-                                candidates = strings.Fields(inner)
-                        } else {
-                                candidates = []string{line}
-                        }
-                        for _, d := range candidates {
-                                d = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(d), "*."))
-                                if !strings.Contains(d, ".") {
-                                        continue
-                                }
-                                for _, td := range m.cfg.Target.Domains {
-                                        if strings.HasSuffix(d, "."+td) || d == td {
-                                                if m.store.AddSubdomainFromSource(d, "tlsx") {
-                                                        newSubs++
-                                                        m.log.Debug("tlsx: new SAN subdomain: %s", d)
-                                                }
-                                                break
-                                        }
-                                }
-                        }
-                }),
-        )
+	newSubs := 0
+	r := runner.Run(ctx, path, args,
+		runner.WithTimeout(timeout),
+		runner.WithLineCallback(func(line string) {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				return
+			}
+			// tlsx output format: "host:port [san1 san2 ...]"
+			// Extract the bracketed SANs when present, otherwise treat whole line as domain
+			var candidates []string
+			if idx := strings.Index(line, "["); idx >= 0 {
+				inner := line[idx+1:]
+				if end := strings.Index(inner, "]"); end >= 0 {
+					inner = inner[:end]
+				}
+				candidates = strings.Fields(inner)
+			} else {
+				candidates = []string{line}
+			}
+			for _, d := range candidates {
+				d = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(d), "*."))
+				if !strings.Contains(d, ".") {
+					continue
+				}
+				if !scope.New(m.cfg).IsInScope(d) {
+					continue
+				}
+				for _, td := range m.cfg.Target.Domains {
+					if strings.HasSuffix(d, "."+td) || d == td {
+						if m.store.AddSubdomainFromSource(d, "tlsx") {
+							newSubs++
+							m.log.Debug("tlsx: new SAN subdomain: %s", d)
+						}
+						break
+					}
+				}
+			}
+		}),
+	)
 
-        if r.IsTimeout() {
-                m.log.ToolTimeout("tlsx", newSubs, timeout)
-        } else if r.Err != nil && newSubs == 0 {
-                m.log.ToolError("tlsx", fmt.Errorf(r.DiagString()), r.Stderr)
-        } else {
-                m.log.ToolDone("tlsx", newSubs, time.Since(start))
-                if newSubs > 0 {
-                        m.log.Info("tlsx: %d new subdomains from TLS SANs added to scope", newSubs)
-                }
-        }
+	if r.IsTimeout() {
+		m.log.ToolTimeout("tlsx", newSubs, timeout)
+	} else if r.Err != nil && newSubs == 0 {
+		m.log.ToolError("tlsx", fmt.Errorf("%s", r.DiagString()), r.Stderr)
+	} else {
+		m.log.ToolDone("tlsx", newSubs, time.Since(start))
+		if newSubs > 0 {
+			m.log.Info("tlsx: %d new subdomains from TLS SANs added to scope", newSubs)
+		}
+	}
 }
 
 // runSubjack scans all subdomains for takeover vulnerabilities (dangling DNS records)
 func (m *Module) runSubjack(ctx context.Context) {
-	if !runner.IsAvailable("subjack") {
+	if !m.cfg.ToolAvailable("subjack") {
 		m.log.Debug("subjack not found — skipping subdomain takeover scan")
 		return
 	}

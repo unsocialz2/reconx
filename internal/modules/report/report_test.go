@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/reconx/reconx/internal/store"
+	"github.com/unsocialz2/reconx/internal/store"
 )
 
 func TestGenerate_EmptyStore(t *testing.T) {
@@ -185,7 +185,6 @@ func TestBuildSourceChart(t *testing.T) {
 		t.Errorf("first entry should be subfinder(2), got %v", chart[0])
 	}
 }
-
 
 func TestRedactSecretValue_Short(t *testing.T) {
 	// Short values are entirely redacted

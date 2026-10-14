@@ -23,15 +23,18 @@ export function Tabs({
   className?: string;
   children: React.ReactNode;
 }) {
-  const [uncontrolledValue, setUncontrolledValue] = React.useState(defaultValue || "");
-  const value = controlledValue !== undefined ? controlledValue : uncontrolledValue;
+  const [uncontrolledValue, setUncontrolledValue] = React.useState(
+    defaultValue || "",
+  );
+  const value =
+    controlledValue !== undefined ? controlledValue : uncontrolledValue;
 
   const handleValueChange = React.useCallback(
     (val: string) => {
       setUncontrolledValue(val);
       onValueChange?.(val);
     },
-    [onValueChange]
+    [onValueChange],
   );
 
   return (
@@ -41,12 +44,18 @@ export function Tabs({
   );
 }
 
-export function TabsList({ className, children }: { className?: string; children: React.ReactNode }) {
+export function TabsList({
+  className,
+  children,
+}: {
+  className?: string;
+  children: React.ReactNode;
+}) {
   return (
     <div
       className={cn(
         "inline-flex items-center justify-center rounded-lg bg-gray-900 p-1 text-gray-400",
-        className
+        className,
       )}
     >
       {children}
@@ -75,7 +84,7 @@ export function TabsTrigger({
         isActive
           ? "bg-[#00ff88]/15 text-[#00ff88] shadow-sm font-semibold"
           : "text-gray-400 hover:text-gray-200 hover:bg-gray-800/50",
-        className
+        className,
       )}
     >
       {children}
@@ -95,5 +104,9 @@ export function TabsContent({
   const ctx = React.useContext(TabsContext);
   if (ctx.value !== value) return null;
 
-  return <div className={cn("mt-4 focus-visible:outline-none", className)}>{children}</div>;
+  return (
+    <div className={cn("mt-4 focus-visible:outline-none", className)}>
+      {children}
+    </div>
+  );
 }

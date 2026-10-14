@@ -19,8 +19,8 @@ import (
 type Result struct {
 	Tool     string
 	Args     []string
-	Lines    []string        // stdout lines only (clean results)
-	Stderr   []string        // stderr lines captured separately
+	Lines    []string // stdout lines only (clean results)
+	Stderr   []string // stderr lines captured separately
 	Duration time.Duration
 	ExitCode int
 	Err      error
@@ -147,7 +147,42 @@ func WithEnv(env []string) Option {
 // Stderr is always captured into Result.Stderr for diagnostics.
 // If timeout is 0 (or SetNoTimeout is true), the command runs with no deadline
 // until it completes naturally or the parent context is cancelled.
-func Run(ctx context.Context, name string, args []string, opts ...Option) *Result {
+func Run(ctx context.Context, name string, args []string, opts ...Option) (result *Result) {
+	if observer, ok := ctx.Value(observerKey{}).(func(*Result)); ok {
+		defer func() {
+			if result != nil {
+				observer(result)
+			}
+		}()
+	}
+	policy, _ := ctx.Value(policyKey{}).(*Policy)
+	var tool ToolPolicy
+	if policy != nil {
+		key, t, known := toolPolicy(policy, name)
+		tool = t
+		if known && !t.Enabled {
+			return &Result{Tool: name, Err: ErrDisabled}
+		}
+		if known && t.Path != "" {
+			name = t.Path
+		}
+		diagnostic := false
+		for _, a := range args {
+			if a == "--help" || a == "-h" || a == "--version" || a == "-version" {
+				diagnostic = true
+			}
+		}
+		if !diagnostic {
+			args = policyArgs(key, args, policy, t)
+		}
+		select {
+		case policy.slots <- struct{}{}:
+			defer func() { <-policy.slots }()
+		case <-ctx.Done():
+			return &Result{Tool: name, Err: ctx.Err()}
+		}
+	}
+
 	cfg := &runConfig{
 		timeout:       0, // 0 = no timeout, use parent ctx only
 		captureStderr: true,
@@ -158,7 +193,10 @@ func Run(ctx context.Context, name string, args []string, opts ...Option) *Resul
 	}
 
 	effectiveTimeout := cfg.timeout
-	if IsNoTimeout() {
+	if tool.Timeout > 0 {
+		effectiveTimeout = tool.Timeout
+	}
+	if IsNoTimeout() || (policy != nil && policy.NoTimeout) {
 		effectiveTimeout = cfg.hardTimeout
 	} else if cfg.hardTimeout > 0 && (effectiveTimeout == 0 || cfg.hardTimeout < effectiveTimeout) {
 		effectiveTimeout = cfg.hardTimeout
@@ -180,6 +218,13 @@ func Run(ctx context.Context, name string, args []string, opts ...Option) *Resul
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	// Environment
+	if policy != nil && policy.ProxyURL != "" {
+		key, _, _ := toolPolicy(policy, name)
+		switch key {
+		case "subjs", "mantra", "jsecret", "getJS", "arjun", "x8":
+			cfg.env = append(cfg.env, "HTTP_PROXY="+policy.ProxyURL, "HTTPS_PROXY="+policy.ProxyURL, "http_proxy="+policy.ProxyURL, "https_proxy="+policy.ProxyURL, "NO_PROXY=", "no_proxy=")
+		}
+	}
 	if len(cfg.env) > 0 {
 		cmd.Env = append(cmd.Environ(), cfg.env...)
 	}
@@ -198,122 +243,138 @@ func Run(ctx context.Context, name string, args []string, opts ...Option) *Resul
 		cmd.Stdin = strings.NewReader("")
 	}
 
-        // Pipes
-        stdoutPipe, err := cmd.StdoutPipe()
-        if err != nil {
-                return &Result{Tool: name, Args: args, Err: fmt.Errorf("stdout pipe: %w", err)}
-        }
-        stderrPipe, err := cmd.StderrPipe()
-        if err != nil {
-                return &Result{Tool: name, Args: args, Err: fmt.Errorf("stderr pipe: %w", err)}
-        }
+	// Pipes
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return &Result{Tool: name, Args: args, Err: fmt.Errorf("stdout pipe: %w", err)}
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return &Result{Tool: name, Args: args, Err: fmt.Errorf("stderr pipe: %w", err)}
+	}
 
-        start := time.Now()
-        if err := cmd.Start(); err != nil {
-                return &Result{Tool: name, Args: args, Err: fmt.Errorf("start: %w", err)}
-        }
+	start := time.Now()
+	if err := cmd.Start(); err != nil {
+		return &Result{Tool: name, Args: args, Err: fmt.Errorf("start: %w", err)}
+	}
 
-        var (
-                mu          sync.Mutex
-                stdoutLines []string
-                stderrLines []string
-                stderrBuf   bytes.Buffer
-        )
+	var (
+		mu            sync.Mutex
+		stdoutLines   []string
+		stderrLines   []string
+		stderrBuf     bytes.Buffer
+		scannerErrors []error
+	)
 
-        // Collect stdout
-        collectStdout := func() {
-                sc := bufio.NewScanner(stdoutPipe)
-                sc.Buffer(make([]byte, 4*1024*1024), 4*1024*1024)
-                for sc.Scan() {
-                        line := strings.TrimSpace(sc.Text())
-                        if line == "" {
-                                continue
-                        }
-                        mu.Lock()
-                        stdoutLines = append(stdoutLines, line)
-                        mu.Unlock()
-                        if cfg.onLine != nil {
-                                cfg.onLine(line)
-                        }
-                }
-        }
+	// Collect stdout
+	collectStdout := func() {
+		sc := bufio.NewScanner(stdoutPipe)
+		sc.Buffer(make([]byte, 4*1024*1024), 4*1024*1024)
+		for sc.Scan() {
+			line := strings.TrimSpace(sc.Text())
+			if line == "" {
+				continue
+			}
+			mu.Lock()
+			stdoutLines = append(stdoutLines, line)
+			mu.Unlock()
+			if cfg.onLine != nil {
+				cfg.onLine(line)
+			}
+		}
+		if err := sc.Err(); err != nil {
+			mu.Lock()
+			scannerErrors = append(scannerErrors, fmt.Errorf("stdout scan: %w", err))
+			mu.Unlock()
+			_ = stdoutPipe.Close()
+		}
+	}
 
-        // Collect stderr — always captured, never mixed into Lines
-        collectStderr := func() {
-                sc := bufio.NewScanner(stderrPipe)
-                sc.Buffer(make([]byte, 1*1024*1024), 1*1024*1024)
-                for sc.Scan() {
-                        line := strings.TrimSpace(sc.Text())
-                        if line == "" {
-                                continue
-                        }
-                        mu.Lock()
-                        stderrLines = append(stderrLines, line)
-                        stderrBuf.WriteString(line + "\n")
-                        mu.Unlock()
-                        if cfg.onStderrLine != nil {
-                                cfg.onStderrLine(line)
-                        }
-                }
-        }
+	// Collect stderr — always captured, never mixed into Lines
+	collectStderr := func() {
+		sc := bufio.NewScanner(stderrPipe)
+		sc.Buffer(make([]byte, 1*1024*1024), 1*1024*1024)
+		for sc.Scan() {
+			line := strings.TrimSpace(sc.Text())
+			if line == "" {
+				continue
+			}
+			mu.Lock()
+			stderrLines = append(stderrLines, line)
+			stderrBuf.WriteString(line + "\n")
+			mu.Unlock()
+			if cfg.onStderrLine != nil {
+				cfg.onStderrLine(line)
+			}
+		}
+		if err := sc.Err(); err != nil {
+			mu.Lock()
+			scannerErrors = append(scannerErrors, fmt.Errorf("stderr scan: %w", err))
+			mu.Unlock()
+			_ = stderrPipe.Close()
+		}
+	}
 
-        var wg sync.WaitGroup
-        wg.Add(2)
-        go func() { defer wg.Done(); collectStdout() }()
-        go func() { defer wg.Done(); collectStderr() }()
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); collectStdout() }()
+	go func() { defer wg.Done(); collectStderr() }()
 
-        // Watchdog: when runCtx is cancelled (timeout or parent cancel),
-        // kill the entire process group so child processes (nuclei
-        // templates, katana headless chrome, etc.) don't become zombies.
-        // The previous code killed AFTER cmd.Wait() which is too late —
-        // the process is already reaped and SIGKILL is a no-op.
-        //
-        // Two channels so we don't double-close on either path:
-        //   kill       — closed by the main path once cmd.Wait() returns
-        //                so the watchdog knows to exit if ctx hasn't fired.
-        //   watchdogDone — closed by the watchdog once it has actually
-        //                  returned (used for the deferred join below).
-        kill := make(chan struct{})
-        watchdogDone := make(chan struct{})
-        go func() {
-                defer close(watchdogDone)
-                select {
-                case <-runCtx.Done():
-                        if cmd.Process != nil {
-                                _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-                        }
-                case <-kill:
-                }
-        }()
+	// Watchdog: when runCtx is cancelled (timeout or parent cancel),
+	// kill the entire process group so child processes (nuclei
+	// templates, katana headless chrome, etc.) don't become zombies.
+	// The previous code killed AFTER cmd.Wait() which is too late —
+	// the process is already reaped and SIGKILL is a no-op.
+	//
+	// Two channels so we don't double-close on either path:
+	//   kill       — closed by the main path once cmd.Wait() returns
+	//                so the watchdog knows to exit if ctx hasn't fired.
+	//   watchdogDone — closed by the watchdog once it has actually
+	//                  returned (used for the deferred join below).
+	kill := make(chan struct{})
+	watchdogDone := make(chan struct{})
+	go func() {
+		defer close(watchdogDone)
+		select {
+		case <-runCtx.Done():
+			if cmd.Process != nil {
+				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			}
+		case <-kill:
+		}
+	}()
 
-        wg.Wait()
-        runErr := cmd.Wait()
-        dur := time.Since(start)
-        close(kill)             // tell watchdog to exit (process already finished)
-        <-watchdogDone          // wait for the watchdog goroutine to fully return
+	wg.Wait()
+	runErr := cmd.Wait()
+	if runErr == nil && len(scannerErrors) > 0 {
+		runErr = scannerErrors[0]
+	}
+	dur := time.Since(start)
+	close(kill)    // tell watchdog to exit (process already finished)
+	<-watchdogDone // wait for the watchdog goroutine to fully return
 
-        // Extract exit code
-        exitCode := 0
-        if runErr != nil {
-                if exitErr, ok := runErr.(*exec.ExitError); ok {
-                        exitCode = exitErr.ExitCode()
-                }
-        }
+	// Extract exit code
+	exitCode := 0
+	if runErr != nil {
+		if exitErr, ok := runErr.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		}
+	}
 
-        // Classify timeout
-        if runCtx.Err() == context.DeadlineExceeded {
-                runErr = fmt.Errorf("timeout after %s", effectiveTimeout.Round(time.Second))
-        }
+	// Classify timeout
+	if runCtx.Err() == context.DeadlineExceeded {
+		runErr = fmt.Errorf("timeout after %s", effectiveTimeout.Round(time.Second))
+	}
 
-        return &Result{
-                Tool:     name,
-                Args:     args,
-                Lines:    stdoutLines,
-                Stderr:   stderrLines,
-                Duration: dur,
-                ExitCode: exitCode,
-                Err:      runErr,
-        }
+	return &Result{
+		Tool:     name,
+		Args:     args,
+		Lines:    stdoutLines,
+		Stderr:   stderrLines,
+		Duration: dur,
+		ExitCode: exitCode,
+		Err:      runErr,
+	}
 }
 
 // ResolveBinaryPath locates the proper binary, checking ~/go/bin and system paths

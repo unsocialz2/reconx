@@ -202,10 +202,18 @@ func TestVersion(t *testing.T) {
 
 func TestCheckTools(t *testing.T) {
 	avail := CheckTools([]string{"echo", "cat", "sh", "fake_tool_xyz_reconx"})
-	if !avail["echo"]  { t.Error("echo should be available") }
-	if !avail["cat"]   { t.Error("cat should be available") }
-	if !avail["sh"]    { t.Error("sh should be available") }
-	if avail["fake_tool_xyz_reconx"] { t.Error("fake tool should not be available") }
+	if !avail["echo"] {
+		t.Error("echo should be available")
+	}
+	if !avail["cat"] {
+		t.Error("cat should be available")
+	}
+	if !avail["sh"] {
+		t.Error("sh should be available")
+	}
+	if avail["fake_tool_xyz_reconx"] {
+		t.Error("fake tool should not be available")
+	}
 }
 
 func TestRun_HardTimeoutEnforcedEvenWithNoTimeout(t *testing.T) {

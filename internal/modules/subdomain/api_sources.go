@@ -25,8 +25,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/reconx/reconx/pkg/logger"
-	"github.com/reconx/reconx/pkg/runner"
+	"github.com/unsocialz2/reconx/pkg/logger"
+	"github.com/unsocialz2/reconx/pkg/runner"
 )
 
 var defaultDialer = &net.Dialer{

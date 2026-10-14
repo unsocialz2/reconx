@@ -2,7 +2,6 @@ package js
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,11 +12,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/reconx/reconx/internal/config"
-	"github.com/reconx/reconx/internal/store"
-	"github.com/reconx/reconx/pkg/logger"
-	"github.com/reconx/reconx/pkg/runner"
-	"github.com/reconx/reconx/pkg/util"
+	"github.com/unsocialz2/reconx/internal/config"
+	"github.com/unsocialz2/reconx/internal/scope"
+	"github.com/unsocialz2/reconx/internal/store"
+	"github.com/unsocialz2/reconx/pkg/logger"
+	"github.com/unsocialz2/reconx/pkg/runner"
+	"github.com/unsocialz2/reconx/pkg/util"
 )
 
 type Module struct {
@@ -33,10 +33,10 @@ func New(cfg *config.Config, st *store.Store, log *logger.Logger, outDir string)
 
 func (m *Module) Run(ctx context.Context) error {
 	m.log.Phase("JS & Secret Analysis",
-		"JS Download → SecretFinder → Gitleaks → TruffleHog Verification")
+		"JS Download → SecretFinder → Gitleaks → TruffleHog Detection")
 
 	// ── Pre-step: Discover active JS files from live web hosts ─────────────
-	if runner.IsAvailable("subjs") {
+	if m.cfg.ToolAvailable("subjs") {
 		var liveURLs []string
 		for _, h := range m.store.GetHosts() {
 			if u, ok := h.Meta["url"]; ok && u != "" {
@@ -53,8 +53,11 @@ func (m *Module) Run(ctx context.Context) error {
 		}
 	}
 
+	if m.cfg.ToolAvailable("subjs") {
+		m.runSubjs(ctx, strings.Join(m.store.GetJSFiles(), "\n"))
+	}
 	start := time.Now()
-	jsFiles := m.store.GetJSFiles()
+	jsFiles := scope.New(m.cfg).FilterList(m.store.GetJSFiles())
 
 	if len(jsFiles) == 0 {
 		m.log.Warn("No JS files discovered — check that URL discovery ran and found JS files")
@@ -87,11 +90,10 @@ func (m *Module) Run(ctx context.Context) error {
 		urlInput = strings.Join(jsFiles, "\n")
 	}
 
-	input := strings.Join(jsFiles, "\n")
 	var wg sync.WaitGroup
 
 	// ── Step 2: SecretFinder on downloaded files ────────────────────────────
-	if runner.IsAvailable("secretfinder") {
+	if m.cfg.ToolAvailable("secretfinder") {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -102,7 +104,7 @@ func (m *Module) Run(ctx context.Context) error {
 	}
 
 	// ── Step 3: Gitleaks on downloaded files ────────────────────────────────
-	if runner.IsAvailable("gitleaks") {
+	if m.cfg.ToolAvailable("gitleaks") {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -112,8 +114,8 @@ func (m *Module) Run(ctx context.Context) error {
 		m.log.ToolSkipped("gitleaks", "not found — install: brew install gitleaks")
 	}
 
-	// ── Step 4: TruffleHog verification on downloaded files ─────────────────
-	if runner.IsAvailable("trufflehog") {
+	// ── Step 4: TruffleHog offline detection on downloaded files ─────────────────
+	if m.cfg.ToolAvailable("trufflehog") {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -124,21 +126,15 @@ func (m *Module) Run(ctx context.Context) error {
 	}
 
 	// ── Complementary tools on URLs ─────────────────────────────────────────
-	if runner.IsAvailable("subjs") {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			m.runSubjs(ctx, input)
-		}()
-	}
-	if runner.IsAvailable("mantra") {
+
+	if m.cfg.ToolAvailable("mantra") {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			m.runMantra(ctx, urlInput)
 		}()
 	}
-	if runner.IsAvailable("jsecret") {
+	if m.cfg.ToolAvailable("jsecret") {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -185,17 +181,12 @@ func (m *Module) downloadJSFiles(ctx context.Context, jsFiles []string, destDir 
 	limit := len(jsFiles)
 	if limit > 2500 {
 		limit = 2500
+		m.store.AddCoverage("js: downloads limited to 2500 files")
 	}
 
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
-	client := &http.Client{
-		Transport: tr,
-		Timeout:   30 * time.Second,
-	}
+	client := scope.New(m.cfg).Client(30 * time.Second)
 
-	sem := make(chan struct{}, 40)
+	sem := make(chan struct{}, m.cfg.Workers)
 	var wg sync.WaitGroup
 
 	m.log.Info("Downloading %d JS files for deep secret inspection...", limit)
@@ -249,8 +240,12 @@ func (m *Module) downloadJSFiles(ctx context.Context, jsFiles []string, destDir 
 				return
 			}
 
-			lr := io.LimitReader(resp.Body, 10*1024*1024)
+			lr := io.LimitReader(resp.Body, 10*1024*1024+1)
 			data, err := io.ReadAll(lr)
+			if len(data) > 10*1024*1024 {
+				m.store.AddCoverage("js: oversized file skipped — " + targetURL)
+				return
+			}
 			if err != nil || len(data) < 10 {
 				return
 			}
@@ -356,16 +351,16 @@ func (m *Module) runSecretFinder(ctx context.Context, jsDir string, urlMap map[s
 
 // detectTrufflehogV3 returns true if the installed trufflehog is v3+
 // (which removed --results=verified in favor of --include-detectors/--exclude-detectors).
-func (m *Module) detectTrufflehogV3() bool {
-	r := runner.Run(context.Background(), "trufflehog",
+func (m *Module) detectTrufflehogV3(ctx context.Context) bool {
+	r := runner.Run(ctx, "trufflehog",
 		[]string{"--help"}, runner.WithTimeout(5*time.Second))
 	for _, line := range r.Lines {
-			ll := strings.ToLower(line)
-			// v3 prints "include-detectors" / "exclude-detectors"; v2 prints
-			// "results=verified" / "results=unknown".
-			if strings.Contains(ll, "include-detectors") {
-				return true
-			}
+		ll := strings.ToLower(line)
+		// v3 prints "include-detectors" / "exclude-detectors"; v2 prints
+		// "results=verified" / "results=unknown".
+		if strings.Contains(ll, "include-detectors") {
+			return true
+		}
 	}
 	for _, line := range r.Stderr {
 		ll := strings.ToLower(line)
@@ -398,7 +393,7 @@ func (m *Module) runSubjsOnLive(ctx context.Context, input string) {
 	for _, line := range r.Lines {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "http") && strings.Contains(strings.ToLower(line), ".js") {
-			if m.store.AddJSFile(line) {
+			if scope.New(m.cfg).IsInScope(line) && m.store.AddJSFile(line) {
 				newJS++
 			}
 		}
@@ -410,39 +405,39 @@ func (m *Module) runSubjsOnLive(ctx context.Context, input string) {
 }
 
 func (m *Module) runSubjs(ctx context.Context, input string) {
-        start := time.Now()
-        count := strings.Count(input, "\n") + 1
-        m.log.Tool("subjs", fmt.Sprintf("%d JS URLs", count))
-        m.log.ToolCmd("subjs", []string{}, fmt.Sprintf("[%d JS URLs via stdin]", count))
+	start := time.Now()
+	count := strings.Count(input, "\n") + 1
+	m.log.Tool("subjs", fmt.Sprintf("%d JS URLs", count))
+	m.log.ToolCmd("subjs", []string{}, fmt.Sprintf("[%d JS URLs via stdin]", count))
 
-        tcfg := m.cfg.Tools["subjs"]
-        timeout := time.Duration(tcfg.Timeout) * time.Second
+	tcfg := m.cfg.Tools["subjs"]
+	timeout := time.Duration(tcfg.Timeout) * time.Second
 
-        r := runner.Run(ctx, "subjs", nil,
-                runner.WithStdin(input),
-                runner.WithTimeout(timeout),
-                runner.WithStderrCallback(func(line string) { m.log.Debug("subjs: %s", line) }))
+	r := runner.Run(ctx, "subjs", nil,
+		runner.WithStdin(input),
+		runner.WithTimeout(timeout),
+		runner.WithStderrCallback(func(line string) { m.log.Debug("subjs: %s", line) }))
 
-        if r.IsTimeout() {
-                m.log.ToolTimeout("subjs", len(r.Lines), timeout)
-        } else if r.Err != nil && len(r.Lines) == 0 {
-                m.log.ToolError("subjs", fmt.Errorf(r.DiagString()), r.Stderr)
-                return
-        }
+	if r.IsTimeout() {
+		m.log.ToolTimeout("subjs", len(r.Lines), timeout)
+	} else if r.Err != nil && len(r.Lines) == 0 {
+		m.log.ToolError("subjs", fmt.Errorf("%s", r.DiagString()), r.Stderr)
+		return
+	}
 
-        newJS := 0
-        for _, line := range r.Lines {
-                line = strings.TrimSpace(line)
-                if strings.HasPrefix(line, "http") && strings.Contains(strings.ToLower(line), ".js") {
-                        if m.store.AddJSFile(line) {
-                                newJS++
-                        }
-                }
-        }
-        m.log.ToolDone("subjs", len(r.Lines), time.Since(start))
-        if newJS > 0 {
-                m.log.Info("subjs: discovered %d additional JS files (added to analysis queue)", newJS)
-        }
+	newJS := 0
+	for _, line := range r.Lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "http") && strings.Contains(strings.ToLower(line), ".js") {
+			if scope.New(m.cfg).IsInScope(line) && m.store.AddJSFile(line) {
+				newJS++
+			}
+		}
+	}
+	m.log.ToolDone("subjs", len(r.Lines), time.Since(start))
+	if newJS > 0 {
+		m.log.Info("subjs: discovered %d additional JS files (added to analysis queue)", newJS)
+	}
 }
 
 func (m *Module) runMantra(ctx context.Context, input string) {
@@ -501,7 +496,7 @@ func (m *Module) runMantra(ctx context.Context, input string) {
 	if r.IsTimeout() {
 		m.log.ToolTimeout("mantra", secretCount, timeout)
 	} else if r.Err != nil {
-		m.log.ToolError("mantra", fmt.Errorf(r.DiagString()), r.Stderr)
+		m.log.ToolError("mantra", fmt.Errorf("%s", r.DiagString()), r.Stderr)
 	} else {
 		m.log.ToolDone("mantra", secretCount, time.Since(start))
 		m.log.Debug("mantra: scanned %d lines total, %d matched secret patterns", len(r.Lines), secretCount)
@@ -561,23 +556,23 @@ func (m *Module) runJsecret(ctx context.Context, input string) {
 
 	if r.IsTimeout() {
 		m.log.ToolTimeout("jsecret", secretCount, timeout)
-        } else if r.Err != nil {
-                m.log.ToolError("jsecret", fmt.Errorf(r.DiagString()), r.Stderr)
-        } else {
-                m.log.ToolDone("jsecret", secretCount, time.Since(start))
-        }
+	} else if r.Err != nil {
+		m.log.ToolError("jsecret", fmt.Errorf("%s", r.DiagString()), r.Stderr)
+	} else {
+		m.log.ToolDone("jsecret", secretCount, time.Since(start))
+	}
 }
 
 func (m *Module) runTrufflehog(ctx context.Context, jsDir string, urlMap map[string]string) {
 	tcfg := m.cfg.Tools["trufflehog"]
 	start := time.Now()
 
-	isV3 := m.detectTrufflehogV3()
+	isV3 := m.detectTrufflehogV3(ctx)
 	var args []string
 	if isV3 {
-		args = []string{"filesystem", jsDir, "--json", "--only-verified", "--no-update"}
+		args = []string{"filesystem", jsDir, "--json", "--no-verification", "--no-update"}
 	} else {
-		args = []string{"filesystem", jsDir, "--json", "--results=verified", "--no-update"}
+		args = []string{"filesystem", jsDir, "--json", "--no-verification", "--no-update"}
 	}
 
 	timeout := 10 * time.Minute
@@ -585,7 +580,7 @@ func (m *Module) runTrufflehog(ctx context.Context, jsDir string, urlMap map[str
 		timeout = time.Duration(tcfg.Timeout) * time.Second
 	}
 
-	m.log.Tool("trufflehog", "verifying secrets against live APIs")
+	m.log.Tool("trufflehog", "detecting candidate secrets offline")
 	m.log.ToolCmd("trufflehog", args, "")
 
 	secretCount := 0
@@ -593,7 +588,7 @@ func (m *Module) runTrufflehog(ctx context.Context, jsDir string, urlMap map[str
 		runner.WithTimeout(timeout),
 		runner.WithStderrCallback(func(line string) { m.log.Debug("trufflehog: %s", line) }),
 		runner.WithLineCallback(func(line string) {
-			if !strings.Contains(line, `"Verified":true`) && !strings.Contains(line, `"verified":true`) {
+			if !strings.HasPrefix(strings.TrimSpace(line), "{") {
 				return
 			}
 			t := util.JsonStr(line, "DetectorName")
@@ -617,42 +612,42 @@ func (m *Module) runTrufflehog(ctx context.Context, jsDir string, urlMap map[str
 			}
 
 			m.store.AddSecret(&store.Secret{
-				Type:   t + " (VERIFIED)",
-				Value:  util.Truncate(raw, 200),
+				Type:   t + " (candidate)",
+				Value:  raw,
 				Source: "trufflehog",
 				File:   origURL,
 			})
 			secretCount++
-			m.log.Secret(t, "trufflehog (VERIFIED)", util.Truncate(raw, 60))
-			m.log.Finding("critical", "Verified Secret: "+t, origURL)
+			m.log.Secret(t, "trufflehog (candidate)", util.Truncate(raw, 60))
+			m.log.Finding("info", "Candidate Secret: "+t, origURL)
 		}))
 
 	if r.IsTimeout() {
 		m.log.ToolTimeout("trufflehog", secretCount, timeout)
 	} else if r.Err != nil && secretCount == 0 {
-		m.log.ToolError("trufflehog", fmt.Errorf(r.DiagString()), r.Stderr)
+		m.log.ToolError("trufflehog", fmt.Errorf("%s", r.DiagString()), r.Stderr)
 	} else {
 		m.log.ToolDone("trufflehog", secretCount, time.Since(start))
-		m.log.Debug("trufflehog: processed %d scan lines, %d verified secrets", len(r.Lines), secretCount)
+		m.log.Debug("trufflehog: processed %d scan lines, %d candidate secrets", len(r.Lines), secretCount)
 	}
 }
 
 func (m *Module) runTrufflehogGitHub(ctx context.Context) {
-	if !runner.IsAvailable("trufflehog") {
+	if !m.cfg.ToolAvailable("trufflehog") {
 		return
 	}
 	start := time.Now()
 	org := m.cfg.Target.OrgName
 	token := m.cfg.Tokens["github"]
-	isV3 := m.detectTrufflehogV3()
+	isV3 := m.detectTrufflehogV3(ctx)
 	var args []string
 	if isV3 {
-		args = []string{"github", "--org=" + org, "--only-verified", "--token=" + token, "--json", "--no-update"}
+		args = []string{"github", "--org=" + org, "--no-verification", "--token=" + token, "--json", "--no-update"}
 	} else {
-		args = []string{"github", "--org=" + org, "--results=verified", "--token=" + token, "--json", "--no-update"}
+		args = []string{"github", "--org=" + org, "--no-verification", "--token=" + token, "--json", "--no-update"}
 	}
 	m.log.Tool("trufflehog-github", org)
-	m.log.ToolCmd("trufflehog", []string{"github", "--org=" + org, "--results=verified", "--token=***", "--json", "--no-update"}, "")
+	m.log.ToolCmd("trufflehog", []string{"github", "--org=" + org, "--no-verification", "--token=***", "--json", "--no-update"}, "")
 
 	secretCount := 0
 	r := runner.Run(ctx, "trufflehog", args,
@@ -660,7 +655,7 @@ func (m *Module) runTrufflehogGitHub(ctx context.Context) {
 		runner.WithTimeout(10*time.Minute),
 		runner.WithStderrCallback(func(line string) { m.log.Debug("trufflehog-github: %s", line) }),
 		runner.WithLineCallback(func(line string) {
-			if !strings.Contains(line, `"Verified":true`) {
+			if !strings.HasPrefix(strings.TrimSpace(line), "{") {
 				return
 			}
 			t := util.JsonStr(line, "DetectorName")
@@ -670,13 +665,13 @@ func (m *Module) runTrufflehogGitHub(ctx context.Context) {
 			m.store.AddSecret(&store.Secret{Type: t, Value: util.Truncate(line, 200), Source: "trufflehog-github"})
 			secretCount++
 			m.log.Secret(t, "trufflehog-github", org)
-			m.log.Finding("critical", "Verified GitHub Secret: "+t, org)
+			m.log.Finding("info", "Candidate GitHub Secret: "+t, org)
 		}))
 
 	if r.IsTimeout() {
 		m.log.ToolTimeout("trufflehog-github", secretCount, 10*time.Minute)
 	} else if r.Err != nil && secretCount == 0 {
-		m.log.ToolError("trufflehog-github", fmt.Errorf(r.DiagString()), r.Stderr)
+		m.log.ToolError("trufflehog-github", fmt.Errorf("%s", r.DiagString()), r.Stderr)
 	} else {
 		m.log.ToolDone("trufflehog-github", secretCount, time.Since(start))
 	}
@@ -721,7 +716,7 @@ func (m *Module) runGitleaks(ctx context.Context, jsDir string, urlMap map[strin
 				}
 				m.store.AddSecret(&store.Secret{
 					Type:   secType,
-					Value:  util.Truncate(cleanSecret, 200),
+					Value:  cleanSecret,
 					Source: "gitleaks",
 					File:   origFile,
 				})
@@ -735,7 +730,7 @@ func (m *Module) runGitleaks(ctx context.Context, jsDir string, urlMap map[strin
 	if r.IsTimeout() {
 		m.log.ToolTimeout("gitleaks", secretCount, 10*time.Minute)
 	} else if r.Err != nil && secretCount == 0 && !util.FileExists(reportFile) {
-		m.log.ToolError("gitleaks", fmt.Errorf(r.DiagString()), r.Stderr)
+		m.log.ToolError("gitleaks", fmt.Errorf("%s", r.DiagString()), r.Stderr)
 	} else {
 		m.log.ToolDone("gitleaks", secretCount, time.Since(start))
 	}
@@ -936,4 +931,3 @@ func isDummyRepeatedSecret(s string) bool {
 	}
 	return false
 }
-

@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -10,91 +11,91 @@ import (
 	"sync"
 	"time"
 
-	"github.com/reconx/reconx/pkg/util"
+	"github.com/unsocialz2/reconx/pkg/util"
 )
 
 // Host represents a discovered live host
 type Host struct {
-        Domain     string            `json:"domain"`
-        IP         string            `json:"ip,omitempty"`
-        StatusCode int               `json:"status_code,omitempty"`
-        Title      string            `json:"title,omitempty"`
-        Server     string            `json:"server,omitempty"`
-        Port       int               `json:"port,omitempty"`
-        TechStack  []string          `json:"tech_stack,omitempty"`
-        Tags       []string          `json:"tags,omitempty"`
-        Meta       map[string]string `json:"meta,omitempty"`
+	Domain     string            `json:"domain"`
+	IP         string            `json:"ip,omitempty"`
+	StatusCode int               `json:"status_code,omitempty"`
+	Title      string            `json:"title,omitempty"`
+	Server     string            `json:"server,omitempty"`
+	Port       int               `json:"port,omitempty"`
+	TechStack  []string          `json:"tech_stack,omitempty"`
+	Tags       []string          `json:"tags,omitempty"`
+	Meta       map[string]string `json:"meta,omitempty"`
 }
 
 // Port holds a discovered open port
 type Port struct {
-        Host     string `json:"host"`
-        Port     int    `json:"port"`
-        Protocol string `json:"protocol"`
-        Service  string `json:"service,omitempty"`
-        Banner   string `json:"banner,omitempty"`
+	Host     string `json:"host"`
+	Port     int    `json:"port"`
+	Protocol string `json:"protocol"`
+	Service  string `json:"service,omitempty"`
+	Banner   string `json:"banner,omitempty"`
 }
 
 // Finding represents a vulnerability or sensitive finding
 type Finding struct {
-        Name        string    `json:"name"`
-        Severity    string    `json:"severity"`
-        Target      string    `json:"target"`
-        Description string    `json:"description,omitempty"`
-        Evidence    string    `json:"evidence,omitempty"`
-        Template    string    `json:"template,omitempty"`
-        FoundAt     time.Time `json:"found_at"`
+	Name        string    `json:"name"`
+	Severity    string    `json:"severity"`
+	Target      string    `json:"target"`
+	Description string    `json:"description,omitempty"`
+	Evidence    string    `json:"evidence,omitempty"`
+	Template    string    `json:"template,omitempty"`
+	FoundAt     time.Time `json:"found_at"`
 }
 
 // Secret represents a discovered credential/token
 type Secret struct {
-        Type   string `json:"type"`
-        Value  string `json:"value"`
-        Source string `json:"source"`
-        File   string `json:"file,omitempty"`
+	Type   string `json:"type"`
+	Value  string `json:"value"`
+	Source string `json:"source"`
+	File   string `json:"file,omitempty"`
 }
 
 // DirResult represents a directory/file discovered during content fuzzing
 type DirResult struct {
-        URL        string `json:"url"`
-        StatusCode int    `json:"status_code"`
-        Size       int    `json:"size,omitempty"`
-        Tool       string `json:"tool"`
-        Target     string `json:"target"`
+	URL        string `json:"url"`
+	StatusCode int    `json:"status_code"`
+	Size       int    `json:"size,omitempty"`
+	Tool       string `json:"tool"`
+	Target     string `json:"target"`
 }
 
 // WAFResult holds WAF detection output for a host
 type WAFResult struct {
-        Host     string `json:"host"`
-        WAF      string `json:"waf"`
-        Detected bool   `json:"detected"`
+	Host     string `json:"host"`
+	WAF      string `json:"waf"`
+	Detected bool   `json:"detected"`
 }
 
 // CloudAsset represents an enumerated cloud storage bucket or asset
 type CloudAsset struct {
-        Provider   string `json:"provider"` // aws, gcp, azure
-        Name       string `json:"name"`
-        URL        string `json:"url"`
-        Status     string `json:"status"` // public, authenticated, private
-        Accessible bool   `json:"accessible"`
+	Provider   string `json:"provider"` // aws, gcp, azure
+	Name       string `json:"name"`
+	URL        string `json:"url"`
+	Status     string `json:"status"` // public, authenticated, private
+	Accessible bool   `json:"accessible"`
 }
 
 // CORSFinding represents a CORS misconfiguration finding
 type CORSFinding struct {
-        URL         string `json:"url"`
-        Origin      string `json:"origin"`
-        ACAO        string `json:"acao"`
-        ACAC        string `json:"acac"`
-        Severity    string `json:"severity"`
-        Description string `json:"description"`
+	URL         string `json:"url"`
+	Origin      string `json:"origin"`
+	ACAO        string `json:"acao"`
+	ACAC        string `json:"acac"`
+	Severity    string `json:"severity"`
+	Description string `json:"description"`
 }
 
 // ParamFinding represents hidden parameters discovered on a URL
 type ParamFinding struct {
-        URL     string   `json:"url"`
-        Method  string   `json:"method"`
-        Params  []string `json:"params"`
-        Tool    string   `json:"tool"`
+	URL    string   `json:"url"`
+	Method string   `json:"method"`
+	Params []string `json:"params"`
+	Tool   string   `json:"tool"`
 }
 
 // Store is the central thread-safe data store
@@ -119,6 +120,7 @@ type Store struct {
 
 	ScanID    string
 	StartTime time.Time
+	Coverage  []string
 }
 
 // New creates a fresh Store
@@ -266,7 +268,13 @@ func (s *Store) GetIPRanges() []string {
 func (s *Store) AddHost(h *Host) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.Hosts[h.Domain] = h
+	key := h.Meta["url"]
+	if u, err := url.Parse(key); err == nil && u.Host != "" {
+		key = strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host)
+	} else {
+		key = fmt.Sprintf("%s:%d", h.Domain, h.Port)
+	}
+	s.Hosts[key] = h
 }
 
 // GetHosts returns all live hosts
@@ -284,6 +292,11 @@ func (s *Store) GetHosts() []*Host {
 func (s *Store) AddPort(p *Port) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for _, v := range s.Ports {
+		if v.Host == p.Host && v.Port == p.Port && v.Protocol == p.Protocol {
+			return
+		}
+	}
 	s.Ports = append(s.Ports, p)
 }
 
@@ -344,9 +357,16 @@ func (s *Store) GetJSFiles() []string {
 
 // AddFinding records a vulnerability finding
 func (s *Store) AddFinding(f *Finding) {
-	f.FoundAt = time.Now()
+	if f.FoundAt.IsZero() {
+		f.FoundAt = time.Now()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for _, v := range s.Findings {
+		if v.Template == f.Template && v.Target == f.Target && v.Name == f.Name {
+			return
+		}
+	}
 	s.Findings = append(s.Findings, f)
 }
 
@@ -435,103 +455,200 @@ func (s *Store) Stats() map[string]int {
 	}
 }
 
-// SaveJSON persists the store as JSON to outDir
-func (s *Store) SaveJSON(outDir string) error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	type snapshot struct {
-		ScanID       string           `json:"scan_id"`
-		StartTime    time.Time        `json:"start_time"`
-		Duration     string           `json:"duration"`
-		Subdomains   []string         `json:"subdomains"`
-		SubSources   []SubdomainEntry `json:"subdomain_sources"`
-		IPRanges     []string         `json:"ip_ranges,omitempty"`
-		Hosts        []*Host          `json:"hosts"`
-		Ports        []*Port          `json:"ports"`
-		URLs         []string         `json:"urls"`
-		Findings     []*Finding       `json:"findings"`
-		Secrets      []*Secret        `json:"secrets"`
-		DirResults   []*DirResult     `json:"dir_results,omitempty"`
-		WAFResults   []*WAFResult     `json:"waf_results,omitempty"`
-		CloudAssets  []*CloudAsset    `json:"cloud_assets,omitempty"`
-		CORSResults  []*CORSFinding   `json:"cors_results,omitempty"`
-		ParamResults []*ParamFinding  `json:"param_results,omitempty"`
-	}
-
-	subs := make([]string, 0, len(s.Subdomains))
-	for sub := range s.Subdomains {
-		subs = append(subs, sub)
-	}
-	sort.Strings(subs)
-
-	subSources := make([]SubdomainEntry, 0, len(subs))
-	for _, sub := range subs {
-		subSources = append(subSources, SubdomainEntry{
-			Subdomain: sub,
-			Source:    s.SubSources[sub],
-		})
-	}
-
-	hosts := make([]*Host, 0, len(s.Hosts))
-	for _, h := range s.Hosts {
-		hosts = append(hosts, h)
-	}
-
-	urls_slice := make([]string, 0, len(s.URLs))
-	for u := range s.URLs {
-		urls_slice = append(urls_slice, u)
-	}
-	sort.Strings(urls_slice) // deterministic order before truncation
-	jsonURLs := urls_slice
-	if len(jsonURLs) > 10000 {
-		jsonURLs = jsonURLs[:10000]
-	}
-
-	snap := snapshot{
-		ScanID:       s.ScanID,
-		StartTime:    s.StartTime,
-		Duration:     time.Since(s.StartTime).Round(time.Second).String(),
-		Subdomains:   subs,
-		SubSources:   subSources,
-		IPRanges:     s.IPRanges,
-		Hosts:        hosts,
-		Ports:        s.Ports,
-		URLs:         jsonURLs,
-		Findings:     s.Findings,
-		Secrets:      s.Secrets,
-		DirResults:   s.DirResults,
-		WAFResults:   s.WAFResults,
-		CloudAssets:  s.CloudAssets,
-		CORSResults:  s.CORSResults,
-		ParamResults: s.ParamResults,
-	}
-
-	data, err := json.MarshalIndent(snap, "", "  ")
-	if err != nil {
-		return err
-	}
-	path := filepath.Join(outDir, "results.json")
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		return fmt.Errorf("writing JSON: %w", err)
-	}
-	return nil
+// Snapshot is the versioned, complete machine-readable scan state.
+type Snapshot struct {
+	SchemaVersion int              `json:"schema_version"`
+	ScanID        string           `json:"scan_id"`
+	StartTime     time.Time        `json:"start_time"`
+	Duration      string           `json:"duration"`
+	Subdomains    []string         `json:"subdomains"`
+	SubSources    []SubdomainEntry `json:"subdomain_sources"`
+	IPRanges      []string         `json:"ip_ranges,omitempty"`
+	Hosts         []*Host          `json:"hosts"`
+	Ports         []*Port          `json:"ports"`
+	URLs          []string         `json:"urls"`
+	JSFiles       []string         `json:"js_files"`
+	Findings      []*Finding       `json:"findings"`
+	Secrets       []*Secret        `json:"secrets"`
+	DirResults    []*DirResult     `json:"dir_results,omitempty"`
+	WAFResults    []*WAFResult     `json:"waf_results,omitempty"`
+	CloudAssets   []*CloudAsset    `json:"cloud_assets,omitempty"`
+	CORSResults   []*CORSFinding   `json:"cors_results,omitempty"`
+	ParamResults  []*ParamFinding  `json:"param_results,omitempty"`
+	Coverage      []string         `json:"coverage,omitempty"`
 }
 
-// SaveRaw saves a plain text list to a file
-func SaveRaw(path string, lines []string) error {
-	if dir := filepath.Dir(path); dir != "" {
-		_ = os.MkdirAll(dir, 0755)
+func (s *Store) Snapshot() Snapshot {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	snap := Snapshot{SchemaVersion: 1, ScanID: s.ScanID, StartTime: s.StartTime, Duration: time.Since(s.StartTime).Round(time.Second).String(), IPRanges: s.IPRanges, Ports: s.Ports, Findings: s.Findings, Secrets: s.Secrets, DirResults: s.DirResults, WAFResults: s.WAFResults, CloudAssets: s.CloudAssets, CORSResults: s.CORSResults, ParamResults: s.ParamResults, Coverage: s.Coverage}
+	for sub := range s.Subdomains {
+		snap.Subdomains = append(snap.Subdomains, sub)
+		snap.SubSources = append(snap.SubSources, SubdomainEntry{sub, s.SubSources[sub]})
 	}
-	f, err := os.Create(path)
+	sort.Strings(snap.Subdomains)
+	for _, host := range s.Hosts {
+		snap.Hosts = append(snap.Hosts, host)
+	}
+	sort.Slice(snap.Hosts, func(i, j int) bool { return snap.Hosts[i].Meta["url"] < snap.Hosts[j].Meta["url"] })
+	for u := range s.URLs {
+		snap.URLs = append(snap.URLs, u)
+	}
+	sort.Strings(snap.URLs)
+	for u := range s.JSFiles {
+		snap.JSFiles = append(snap.JSFiles, u)
+	}
+	sort.Strings(snap.JSFiles)
+	// Detach pointer/slice data so callers cannot mutate the synchronized store.
+	data, _ := json.Marshal(snap)
+	var copy Snapshot
+	_ = json.Unmarshal(data, &copy)
+	return copy
+}
+func AtomicWrite(path string, data []byte, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), ".reconx-*")
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	for _, l := range lines {
-		fmt.Fprintln(f, l)
+	temp := f.Name()
+	defer os.Remove(temp)
+	if err = f.Chmod(mode); err == nil {
+		_, err = f.Write(data)
 	}
-	return nil
+	if err == nil {
+		err = f.Sync()
+	}
+	closeErr := f.Close()
+	if err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(temp, path)
+}
+func (s *Store) SaveSnapshot(path string) error {
+	data, err := json.MarshalIndent(s.Snapshot(), "", "  ")
+	if err != nil {
+		return err
+	}
+	return AtomicWrite(path, data, 0600)
+}
+func (s *Store) SaveJSON(outDir string) error {
+	return s.SaveSnapshot(filepath.Join(outDir, "results.json"))
+}
+
+// LoadSnapshot reapplies current scope to every active asset before later phases run.
+func LoadSnapshot(path string, allowed func(string) bool) (*Store, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var snap Snapshot
+	if err = json.Unmarshal(data, &snap); err != nil {
+		return nil, err
+	}
+	if snap.SchemaVersion != 1 {
+		return nil, fmt.Errorf("unsupported snapshot schema %d", snap.SchemaVersion)
+	}
+	s := New(snap.ScanID)
+	s.StartTime = snap.StartTime
+	s.Coverage = snap.Coverage
+	for _, v := range snap.Subdomains {
+		if allowed(v) {
+			s.AddSubdomain(v)
+		}
+	}
+	for _, v := range snap.SubSources {
+		if allowed(v.Subdomain) {
+			s.AddSubdomainFromSource(v.Subdomain, v.Source)
+		}
+	}
+	for _, v := range snap.Hosts {
+		target := v.Meta["url"]
+		if target == "" {
+			target = v.Domain
+		}
+		if allowed(target) {
+			s.AddHost(v)
+		}
+	}
+	for _, v := range snap.Ports {
+		if allowed(v.Host) {
+			s.AddPort(v)
+		}
+	}
+	for _, v := range snap.URLs {
+		if allowed(v) {
+			s.AddURL(v)
+		}
+	}
+	for _, v := range snap.JSFiles {
+		if allowed(v) {
+			s.AddJSFile(v)
+		}
+	}
+	for _, v := range snap.Findings {
+		if allowed(v.Target) {
+			s.AddFinding(v)
+		}
+	}
+	for _, v := range snap.Secrets {
+		if v.File == "" || allowed(v.File) || v.Source == "trufflehog-github" {
+			s.AddSecret(v)
+		}
+	}
+	for _, v := range snap.DirResults {
+		if allowed(v.URL) {
+			s.AddDirResult(v)
+		}
+	}
+	for _, v := range snap.WAFResults {
+		if allowed(v.Host) {
+			s.AddWAFResult(v)
+		}
+	}
+	for _, v := range snap.CloudAssets {
+		if allowed(v.URL) {
+			s.AddCloudAsset(v)
+		}
+	}
+	for _, v := range snap.CORSResults {
+		if allowed(v.URL) {
+			s.AddCORSFinding(v)
+		}
+	}
+	for _, v := range snap.ParamResults {
+		if allowed(v.URL) {
+			s.AddParamFinding(v)
+		}
+	}
+	for _, v := range snap.IPRanges {
+		s.AddIPRange(v)
+	}
+	return s, nil
+}
+func (s *Store) AddCoverage(message string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, v := range s.Coverage {
+		if v == message {
+			return
+		}
+	}
+	s.Coverage = append(s.Coverage, message)
+}
+
+// SaveRaw atomically writes private raw evidence and propagates write errors.
+func SaveRaw(path string, lines []string) error {
+	data := strings.Join(lines, "\n")
+	if len(lines) > 0 {
+		data += "\n"
+	}
+	return AtomicWrite(path, []byte(data), 0600)
 }
 
 // DataDir returns the path to the raw tool-output directory (outDir/data/).
@@ -627,4 +744,3 @@ func (s *Store) SplitURLsByWAF(urls []string) (waf, nowaf []string) {
 	}
 	return
 }
-

@@ -2,16 +2,18 @@ package subdomain
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
-	"github.com/reconx/reconx/internal/config"
-	"github.com/reconx/reconx/internal/scope"
-	"github.com/reconx/reconx/internal/store"
-	"github.com/reconx/reconx/pkg/logger"
+	"github.com/unsocialz2/reconx/internal/config"
+	"github.com/unsocialz2/reconx/internal/scope"
+	"github.com/unsocialz2/reconx/internal/store"
+	"github.com/unsocialz2/reconx/pkg/logger"
 )
 
-func TestCleanLines(t *testing.T) {	in := []string{
+func TestCleanLines(t *testing.T) {
+	in := []string{
 		"*.example.com",
 		"SUB.EXAMPLE.COM",
 		"   test.example.com   ",
@@ -45,18 +47,18 @@ func TestSubdomainFilter(t *testing.T) {
 		want bool
 	}{
 		{"api.example.com", true},
-		{"API.EXAMPLE.COM", false},         // dup of api.example.com (lowercased)
-		{"*.wild.example.com", true},       // wildcard stripped
-		{"prefix", true},                   // bare prefix → prefix.example.com
-		{"1.2.3.4,sub.example.com", true},  // CSV from bufferover
+		{"API.EXAMPLE.COM", false},        // dup of api.example.com (lowercased)
+		{"*.wild.example.com", true},      // wildcard stripped
+		{"prefix", true},                  // bare prefix → prefix.example.com
+		{"1.2.3.4,sub.example.com", true}, // CSV from bufferover
 		{"https://tls.example.com/path", true},
 		{"host.example.com:8443", true},
-		{"evil.com", false},                // different domain
-		{"notexample.com", false},          // suffix trick
-		{"trailing.example.com.", true},    // trailing dot stripped
-		{"api.example.com", false},         // duplicate
+		{"evil.com", false},             // different domain
+		{"notexample.com", false},       // suffix trick
+		{"trailing.example.com.", true}, // trailing dot stripped
+		{"api.example.com", false},      // duplicate
 		{"", false},
-		{"192.168.1.1", false},             // bare IP — no dot-label match
+		{"192.168.1.1", false}, // bare IP — no dot-label match
 	}
 
 	for _, c := range cases {
@@ -87,7 +89,7 @@ func TestSubdomainFilter(t *testing.T) {
 }
 
 func TestSubfinderMyFitnessPal(t *testing.T) {
-	if testing.Short() {
+	if testing.Short() || os.Getenv("RECONX_LIVE_TESTS") != "1" {
 		t.Skip("skipping live network test in short mode")
 	}
 	cfg := config.DefaultConfig()

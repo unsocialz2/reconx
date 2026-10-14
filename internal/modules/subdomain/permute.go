@@ -20,7 +20,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/reconx/reconx/pkg/logger"
+	"github.com/unsocialz2/reconx/pkg/logger"
 )
 
 // permutePrefixes and permuteSuffixes are common dev/staging naming patterns
@@ -175,6 +175,7 @@ func (m *Module) runPermute(ctx context.Context, domain string, board *logger.Pr
 			trimmed = append(trimmed, candidates[int(i)])
 		}
 		candidates = trimmed
+		m.store.AddCoverage("DNS permutations sampled at candidate limit")
 	}
 
 	m.log.Debug("permute: %d candidates to resolve (from %d known prefixes)",
@@ -184,11 +185,14 @@ func (m *Module) runPermute(ctx context.Context, domain string, board *logger.Pr
 	// We use a custom resolver with a short timeout per query.
 	resolver := net.DefaultResolver
 	// Prefer a short dial timeout — many candidates will not resolve.
-	sem := make(chan struct{}, 50) // 50 concurrent DNS lookups
+	sem := make(chan struct{}, m.cfg.Workers) // 50 concurrent DNS lookups
 	results := make(chan string, len(candidates))
 
 	var wg sync.WaitGroup
 	for _, candidate := range candidates {
+		if !m.scope.IsInScope(candidate) {
+			continue
+		}
 		if ctx.Err() != nil {
 			break // cancelled — stop generating lookups
 		}

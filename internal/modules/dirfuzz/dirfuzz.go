@@ -1,17 +1,17 @@
 package dirfuzz
 
 import (
-"context"
-"fmt"
-"os"
-"strings"
-"time"
+	"context"
+	"fmt"
+	"os"
+	"strings"
+	"time"
 
-"github.com/reconx/reconx/internal/config"
-"github.com/reconx/reconx/internal/store"
-"github.com/reconx/reconx/pkg/logger"
-"github.com/reconx/reconx/pkg/runner"
-"github.com/reconx/reconx/pkg/util"
+	"github.com/unsocialz2/reconx/internal/config"
+	"github.com/unsocialz2/reconx/internal/store"
+	"github.com/unsocialz2/reconx/pkg/logger"
+	"github.com/unsocialz2/reconx/pkg/runner"
+	"github.com/unsocialz2/reconx/pkg/util"
 )
 
 // Module runs directory and content fuzzing against live hosts.
@@ -37,7 +37,7 @@ func New(cfg *config.Config, st *store.Store, log *logger.Logger, outDir string)
 // Run executes directory fuzzing against all live hosts.
 func (m *Module) Run(ctx context.Context) error {
 	m.log.Phase("Directory & Content Fuzzing",
-"feroxbuster (primary) → dirsearch (fallback) → ffuf (last resort) — recursive, multi-ext")
+		"feroxbuster (primary) → dirsearch (fallback) → ffuf (last resort) — recursive, multi-ext")
 
 	hosts := m.store.GetHosts()
 	if len(hosts) == 0 {
@@ -80,7 +80,7 @@ func (m *Module) Run(ctx context.Context) error {
 		feroxPath = feroxcfg.Path
 	}
 
-	if runner.IsAvailable(feroxPath) {
+	if m.cfg.ToolAvailable(feroxPath) {
 		n := m.runFeroxbuster(ctx, targets, wordlist, dirsDir, feroxcfg)
 		total += n
 	} else {
@@ -93,7 +93,7 @@ func (m *Module) Run(ctx context.Context) error {
 			dPath = dcfg.Path
 		}
 
-		if runner.IsAvailable(dPath) {
+		if m.cfg.ToolAvailable(dPath) {
 			n := m.runDirsearch(ctx, targets, wordlist, dirsDir, dcfg)
 			total += n
 		} else {
@@ -105,7 +105,7 @@ func (m *Module) Run(ctx context.Context) error {
 			if ffufcfg.Path != "" {
 				ffufPath = ffufcfg.Path
 			}
-			if runner.IsAvailable(ffufPath) {
+			if m.cfg.ToolAvailable(ffufPath) {
 				n := m.runFFUF(ctx, targets, wordlist, dirsDir, ffufcfg)
 				total += n
 			} else {
@@ -176,24 +176,24 @@ func (m *Module) runFeroxbuster(ctx context.Context, targets []string, wordlist,
 
 	count := 0
 	r := runner.Run(ctx, "feroxbuster", args,
-runner.WithStdin(input),
-runner.WithTimeout(timeout),
-runner.WithStderrCallback(func(line string) {
-m.log.Debug("feroxbuster: %s", line)
-}),
-runner.WithLineCallback(func(line string) {
-line = strings.TrimSpace(line)
-if line == "" || strings.HasPrefix(line, "#") {
-return
-}
-d := parseFeroxLine(line)
-if d == nil {
-return
-}
-d.Tool = "feroxbuster"
-m.store.AddDirResult(d)
-count++
-if d.StatusCode < 400 {
+		runner.WithStdin(input),
+		runner.WithTimeout(timeout),
+		runner.WithStderrCallback(func(line string) {
+			m.log.Debug("feroxbuster: %s", line)
+		}),
+		runner.WithLineCallback(func(line string) {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				return
+			}
+			d := parseFeroxLine(line)
+			if d == nil {
+				return
+			}
+			d.Tool = "feroxbuster"
+			m.store.AddDirResult(d)
+			count++
+			if d.StatusCode < 400 {
 				m.log.Info("  [%d] %s", d.StatusCode, d.URL)
 			}
 		}),
@@ -202,7 +202,7 @@ if d.StatusCode < 400 {
 	if r.IsTimeout() {
 		m.log.ToolTimeout("feroxbuster", count, timeout)
 	} else if r.Err != nil && count == 0 {
-		m.log.ToolError("feroxbuster", fmt.Errorf(r.DiagString()), r.Stderr)
+		m.log.ToolError("feroxbuster", fmt.Errorf("%s", r.DiagString()), r.Stderr)
 	} else {
 		m.log.ToolDone("feroxbuster", count, time.Since(start))
 	}
@@ -274,17 +274,17 @@ func (m *Module) runDirsearch(ctx context.Context, targets []string, wordlist, o
 
 		n := 0
 		r := runner.Run(ctx, "dirsearch", args,
-runner.WithTimeout(timeout),
-runner.WithLineCallback(func(line string) {
-d := parseDirsearchLine(line, target)
-if d == nil {
-return
-}
-d.Tool = "dirsearch"
-m.store.AddDirResult(d)
-n++
-count++
-if d.StatusCode < 400 {
+			runner.WithTimeout(timeout),
+			runner.WithLineCallback(func(line string) {
+				d := parseDirsearchLine(line, target)
+				if d == nil {
+					return
+				}
+				d.Tool = "dirsearch"
+				m.store.AddDirResult(d)
+				n++
+				count++
+				if d.StatusCode < 400 {
 					m.log.Info("  [%d] %s", d.StatusCode, d.URL)
 				}
 			}),
@@ -360,19 +360,19 @@ func (m *Module) runFFUF(ctx context.Context, targets []string, wordlist, outDir
 
 		n := 0
 		r := runner.Run(ctx, "ffuf", args,
-runner.WithTimeout(timeout),
-runner.WithLineCallback(func(line string) {
-if !strings.Contains(line, `"url"`) {
-return
-}
-url := util.JsonStr(line, "url")
-statusStr := util.JsonStr(line, "status")
-if url == "" || statusStr == "" {
-return
-}
-code := 0
-for _, ch := range statusStr {
-if ch < '0' || ch > '9' {
+			runner.WithTimeout(timeout),
+			runner.WithLineCallback(func(line string) {
+				if !strings.Contains(line, `"url"`) {
+					return
+				}
+				url := util.JsonStr(line, "url")
+				statusStr := util.JsonStr(line, "status")
+				if url == "" || statusStr == "" {
+					return
+				}
+				code := 0
+				for _, ch := range statusStr {
+					if ch < '0' || ch > '9' {
 						break
 					}
 					code = code*10 + int(ch-'0')

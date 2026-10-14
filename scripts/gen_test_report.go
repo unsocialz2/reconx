@@ -7,8 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/reconx/reconx/internal/modules/report"
-	"github.com/reconx/reconx/internal/store"
+	"github.com/unsocialz2/reconx/internal/modules/report"
+	"github.com/unsocialz2/reconx/internal/store"
 )
 
 func main() {

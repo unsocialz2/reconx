@@ -44,14 +44,14 @@ const stuckAlertAfter = 60 * time.Second
 // ProgressBoard shows all running tools in a live-updating table with
 // throughput, stuck detection, and an aggregate summary header.
 type ProgressBoard struct {
-	mu       sync.Mutex
-	tools    map[string]*ToolStatus
-	order    []string // insertion order for stable display
-	logger   *Logger
-	done     chan struct{}
-	stopped  bool
-	lines    int  // how many lines we drew last frame (for cursor-up)
-	paused   bool // paused while printing a permanent log line
+	mu      sync.Mutex
+	tools   map[string]*ToolStatus
+	order   []string // insertion order for stable display
+	logger  *Logger
+	done    chan struct{}
+	stopped bool
+	lines   int  // how many lines we drew last frame (for cursor-up)
+	paused  bool // paused while printing a permanent log line
 
 	// liveStats is an optional callback that returns live counts for the
 	// summary header (subdomains, hosts, urls, findings, secrets, ports).

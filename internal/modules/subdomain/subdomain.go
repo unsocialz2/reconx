@@ -1,103 +1,128 @@
 package subdomain
 
 import (
-        "context"
-        "fmt"
-        "net"
-        "os"
-        "path/filepath"
-        "regexp"
-        "strings"
-        "sync"
-        "time"
+	"context"
+	"fmt"
+	"net"
+	"net/netip"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"sync"
+	"time"
 
-        "github.com/reconx/reconx/internal/config"
-        "github.com/reconx/reconx/internal/scope"
-        "github.com/reconx/reconx/internal/store"
-        "github.com/reconx/reconx/pkg/logger"
-        "github.com/reconx/reconx/pkg/runner"
-        "github.com/reconx/reconx/pkg/util"
+	"github.com/unsocialz2/reconx/internal/config"
+	"github.com/unsocialz2/reconx/internal/scope"
+	"github.com/unsocialz2/reconx/internal/store"
+	"github.com/unsocialz2/reconx/pkg/logger"
+	"github.com/unsocialz2/reconx/pkg/runner"
+	"github.com/unsocialz2/reconx/pkg/util"
 )
 
 type Module struct {
-        cfg    *config.Config
-        store  *store.Store
-        scope  *scope.Filter
-        log    *logger.Logger
-        outDir string
+	cfg    *config.Config
+	store  *store.Store
+	scope  *scope.Filter
+	log    *logger.Logger
+	outDir string
 }
 
 func New(cfg *config.Config, st *store.Store, sc *scope.Filter, log *logger.Logger, outDir string) *Module {
-        return &Module{cfg: cfg, store: st, scope: sc, log: log, outDir: outDir}
+	return &Module{cfg: cfg, store: st, scope: sc, log: log, outDir: outDir}
 }
 
 func (m *Module) Run(ctx context.Context) error {
-        m.log.Phase("Subdomain Enumeration",
-                "All tools run in parallel — board updates live — results merged & deduplicated")
+	m.log.Phase("Subdomain Enumeration",
+		"All tools run in parallel — board updates live — results merged & deduplicated")
 
-        start := time.Now()
-        board := m.log.NewProgressBoard()
+	for _, raw := range m.cfg.Target.IPRanges {
+		if addr, err := netip.ParseAddr(raw); err == nil {
+			if m.scope.IsInScope(raw) {
+				m.store.AddSubdomainFromSource(addr.String(), "explicit-ip")
+			}
+			continue
+		}
+		prefix, err := netip.ParsePrefix(raw)
+		if err != nil {
+			continue
+		}
+		m.store.AddIPRange(prefix.String())
+		count := 0
+		for addr := prefix.Masked().Addr(); prefix.Contains(addr); addr = addr.Next() {
+			if count >= 4096 {
+				m.store.AddCoverage("IP expansion capped at 4096 addresses for " + raw)
+				break
+			}
+			if m.scope.IsInScope(addr.String()) {
+				m.store.AddSubdomainFromSource(addr.String(), "explicit-cidr")
+			}
+			count++
+		}
+	}
+	start := time.Now()
+	board := m.log.NewProgressBoard()
 
-        // Live totals in the summary header — gives the user an instant
-        // "is anything happening?" answer without scrolling per-tool rows.
-        board.SetLiveStats(func() map[string]int {
-                stats := m.store.Stats()
-                return map[string]int{
-                        "subdomains": stats["subdomains"],
-                        "live_hosts": stats["live_hosts"],
-                        "urls":       stats["urls"],
-                        "findings":   stats["findings"],
-                        "secrets":    stats["secrets"],
-                }
-        })
+	// Live totals in the summary header — gives the user an instant
+	// "is anything happening?" answer without scrolling per-tool rows.
+	board.SetLiveStats(func() map[string]int {
+		stats := m.store.Stats()
+		return map[string]int{
+			"subdomains": stats["subdomains"],
+			"live_hosts": stats["live_hosts"],
+			"urls":       stats["urls"],
+			"findings":   stats["findings"],
+			"secrets":    stats["secrets"],
+		}
+	})
 
-        // ── Wildcard detection (MUST run before any bruteforce) ─────────────────────
-        // If a domain has wildcard DNS, bruteforce results will be flooded with
-        // false positives (every word resolves). We detect this early and warn
-        // so the user can decide whether to continue or add --skip-bruteforce.
-        for _, domain := range m.cfg.Target.Domains {
-                m.runWildcardCheck(ctx, domain, board)
-        }
+	// ── Wildcard detection (MUST run before any bruteforce) ─────────────────────
+	// If a domain has wildcard DNS, bruteforce results will be flooded with
+	// false positives (every word resolves). We detect this early and warn
+	// so the user can decide whether to continue or add --skip-bruteforce.
+	for _, domain := range m.cfg.Target.Domains {
+		m.runWildcardCheck(ctx, domain, board)
+	}
 
-        var wg sync.WaitGroup
-        for _, domain := range m.cfg.Target.Domains {
-                domain := domain
-                wg.Add(1)
-                go func() {
-                        defer wg.Done()
-                        m.enumerateDomain(ctx, domain, board)
-                }()
-        }
+	var wg sync.WaitGroup
+	for _, domain := range m.cfg.Target.Domains {
+		domain := domain
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			m.enumerateDomain(ctx, domain, board)
+		}()
+	}
 
-        if len(m.cfg.Target.IPRanges) > 0 && runner.IsAvailable("dnsx") {
-                wg.Add(1)
-                go func() {
-                        defer wg.Done()
-                        m.runPTRSweep(ctx, board)
-                }()
-        }
+	if len(m.cfg.Target.IPRanges) > 0 && m.cfg.ToolAvailable("dnsx") {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			m.runPTRSweep(ctx, board)
+		}()
+	}
 
-        for _, asn := range m.cfg.Target.ASNs {
-                asn := asn
-                wg.Add(1)
-                go func() {
-                        defer wg.Done()
-                        m.runASNMap(ctx, asn, board)
-                }()
-        }
+	for _, asn := range m.cfg.Target.ASNs {
+		asn := asn
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			m.runASNMap(ctx, asn, board)
+		}()
+	}
 
-        wg.Wait()
+	wg.Wait()
 
-        total := len(m.store.GetSubdomains())
-        m.log.PhaseComplete("Subdomain Enumeration", total, time.Since(start))
-        m.printSourceSummary(board)
-        board.Stop()
-        // ── massdns resolve (optional, runs if massdns binary is available) ────────
-        // Much faster than puredns/dnsx for very large subdomain sets (10k+).
-        // Results are merged back into store so later phases see everything.
-        if total > 5000 && runner.IsAvailable("massdns") {
-                m.runMassdns(ctx, m.store.GetSubdomains())
-        }
+	total := len(m.store.GetSubdomains())
+	m.log.PhaseComplete("Subdomain Enumeration", total, time.Since(start))
+	m.printSourceSummary(board)
+	board.Stop()
+	// ── massdns resolve (optional, runs if massdns binary is available) ────────
+	// Much faster than puredns/dnsx for very large subdomain sets (10k+).
+	// Results are merged back into store so later phases see everything.
+	if total > 5000 && m.cfg.ToolAvailable("massdns") {
+		m.runMassdns(ctx, m.store.GetSubdomains())
+	}
 
 	subs := m.store.GetSubdomains()
 	if err := store.SaveRaw(m.outDir+"/all_subs.txt", subs); err != nil {
@@ -108,7 +133,12 @@ func (m *Module) Run(ctx context.Context) error {
 	if err := store.SaveRaw(m.outDir+"/subdomains.txt", subs); err != nil {
 		m.log.Warn("Failed to save subdomains.txt: %v", err)
 	}
-	return nil
+	for _, status := range board.SourceStats() {
+		if status.Name != "wildcard-check" && (status.State == "error" || status.State == "timeout") {
+			return fmt.Errorf("source %s incomplete: %s", status.Name, status.Message)
+		}
+	}
+	return ctx.Err()
 }
 
 // printSourceSummary prints a per-source yield table after enumeration so
@@ -116,6 +146,11 @@ func (m *Module) Run(ctx context.Context) error {
 // the "why did I get fewer domains than subfinder alone?" answer at a glance.
 func (m *Module) printSourceSummary(board *logger.ProgressBoard) {
 	stats := board.SourceStats()
+	for _, status := range stats {
+		if status.State == "error" || status.State == "timeout" || status.State == "skipped" {
+			m.store.AddCoverage("source " + status.Name + ": " + status.State + " — " + status.Message)
+		}
+	}
 	if len(stats) == 0 {
 		return
 	}
@@ -162,33 +197,33 @@ func (m *Module) enumerateDomain(ctx context.Context, domain string, board *logg
 	// passive source we know about.
 	tools := []toolDef{
 		// Binary-backed tools (require install.sh)
-		{name: "subfinder",   binKey: "subfinder",         fn: m.runSubfinder},
-		{name: "assetfinder", binKey: "assetfinder",       fn: m.runAssetfinder},
-		{name: "findomain",   binKey: "findomain",         fn: m.runFindomain},
-		{name: "amass",       binKey: "amass",             fn: m.runAmass},
-		{name: "chaos",       binKey: "chaos", tokenKey: "chaos",       fn: m.runChaos},
+		{name: "subfinder", binKey: "subfinder", fn: m.runSubfinder},
+		{name: "assetfinder", binKey: "assetfinder", fn: m.runAssetfinder},
+		{name: "findomain", binKey: "findomain", fn: m.runFindomain},
+		{name: "amass", binKey: "amass", fn: m.runAmass},
+		{name: "chaos", binKey: "chaos", tokenKey: "chaos", fn: m.runChaos},
 		{name: "github-subs", binKey: "github-subdomains", tokenKey: "github", fn: m.runGithubSubs},
-		{name: "puredns",     binKey: "puredns", active: true,          fn: m.runPuredns},
-		{name: "shuffledns",  binKey: "shuffledns", active: true,       fn: m.runShuffleDNS},
-		{name: "dnsx-brute",  binKey: "dnsx", active: true,             fn: m.runDnsxBrute},
+		{name: "puredns", binKey: "puredns", active: true, fn: m.runPuredns},
+		{name: "shuffledns", binKey: "shuffledns", active: true, fn: m.runShuffleDNS},
+		{name: "dnsx-brute", binKey: "dnsx", active: true, fn: m.runDnsxBrute},
 
 		// HTTP-only API sources (no binary needed)
-		{name: "crt.sh",          fn: m.runCrtSh},
-		{name: "certspotter",     fn: m.runCertspotter},
-		{name: "hackertarget",    fn: m.runHackerTarget},
-		{name: "anubis",          fn: m.runAnubis},
-		{name: "rapiddns",        fn: m.runRapidDNS},
+		{name: "crt.sh", fn: m.runCrtSh},
+		{name: "certspotter", fn: m.runCertspotter},
+		{name: "hackertarget", fn: m.runHackerTarget},
+		{name: "anubis", fn: m.runAnubis},
+		{name: "rapiddns", fn: m.runRapidDNS},
 		{name: "subdomaincenter", fn: m.runSubdomainCenter},
-		{name: "alienvault-otx",  fn: m.runOTXSubs},
-		{name: "urlscan",         fn: m.runURLScan},
-		{name: "virustotal",      tokenKey: "virustotal",     fn: m.runVirusTotal},
-		{name: "shodan",          tokenKey: "shodan",         fn: m.runShodan},
-		{name: "securitytrails",  tokenKey: "securitytrails", fn: m.runSecurityTrails},
-		{name: "censys",          tokenKey: "censys",         fn: m.runCensys},
+		{name: "alienvault-otx", fn: m.runOTXSubs},
+		{name: "urlscan", fn: m.runURLScan},
+		{name: "virustotal", tokenKey: "virustotal", fn: m.runVirusTotal},
+		{name: "shodan", tokenKey: "shodan", fn: m.runShodan},
+		{name: "securitytrails", tokenKey: "securitytrails", fn: m.runSecurityTrails},
+		{name: "censys", tokenKey: "censys", fn: m.runCensys},
 	}
 
-	hasPuredns := runner.IsAvailable("puredns")
-	hasShuffledns := runner.IsAvailable("shuffledns")
+	hasPuredns := m.cfg.ToolAvailable("puredns")
+	hasShuffledns := m.cfg.ToolAvailable("shuffledns")
 
 	// ── WAVE 1: passive/API sources ─────────────────────────────────────────
 	// All HTTP/API-based tools run concurrently. This wave is light on DNS
@@ -230,7 +265,7 @@ func (m *Module) enumerateDomain(ctx context.Context, domain string, board *logg
 						path = tcfg.Path
 					}
 				}
-				if !runner.IsAvailable(path) {
+				if !m.cfg.ToolAvailable(path) {
 					board.Skip(t.name, "not found — run install.sh")
 					continue
 				}
@@ -241,9 +276,9 @@ func (m *Module) enumerateDomain(ctx context.Context, domain string, board *logg
 			go func() {
 				defer wg.Done()
 				results, _ := t.fn(ctx, domain, board)
-				clean    := cleanLines(results)
+				clean := cleanLines(results)
 				filtered := m.scope.FilterList(clean)
-				dropped  := len(clean) - len(filtered)
+				dropped := len(clean) - len(filtered)
 				// Tag each subdomain with the source that found it
 				// so the HTML report can filter by source.
 				added := m.store.AddSubdomainsBulkWithSource(filtered, t.name)
@@ -503,32 +538,32 @@ func (m *Module) runGithubSubs(ctx context.Context, domain string, board *logger
 var ghTsPrefix = regexp.MustCompile(`^\[\d{2}:\d{2}:\d{2}\]\s*`)
 
 func (m *Module) runDnsxBrute(ctx context.Context, domain string, board *logger.ProgressBoard) ([]string, []string) {
-        wordlist := findWordlist(m.cfg)
-        if wordlist == "" {
-                board.Skip("dnsx-brute", "no wordlist found")
-                return nil, nil
-        }
-        tcfg := m.cfg.Tools["dnsx"]
-        path := "dnsx"
-        if tcfg.Path != "" {
-                path = tcfg.Path
-        }
-        args := []string{"-silent", "-d", domain, "-w", wordlist, "-t", "100", "-rl", "500"}
-        resolvers := findResolvers(m.cfg)
-        if resolvers != "" {
-                args = append(args, "-r", resolvers)
-        }
-        timeout := 10 * time.Minute
-        if tcfg.Timeout > 0 {
-                timeout = time.Duration(tcfg.Timeout) * time.Second
-        }
-        r := runner.Run(ctx, path, args,
-                runner.WithTimeout(timeout),
-                runner.WithLineCallback(func(line string) { board.Heartbeat("dnsx-brute") }),
-                runner.WithStderrCallback(func(line string) { board.Heartbeat("dnsx-brute") }))
+	wordlist := findWordlist(m.cfg)
+	if wordlist == "" {
+		board.Skip("dnsx-brute", "no wordlist found")
+		return nil, nil
+	}
+	tcfg := m.cfg.Tools["dnsx"]
+	path := "dnsx"
+	if tcfg.Path != "" {
+		path = tcfg.Path
+	}
+	args := []string{"-silent", "-d", domain, "-w", wordlist, "-t", "100", "-rl", "500"}
+	resolvers := findResolvers(m.cfg)
+	if resolvers != "" {
+		args = append(args, "-r", resolvers)
+	}
+	timeout := 10 * time.Minute
+	if tcfg.Timeout > 0 {
+		timeout = time.Duration(tcfg.Timeout) * time.Second
+	}
+	r := runner.Run(ctx, path, args,
+		runner.WithTimeout(timeout),
+		runner.WithLineCallback(func(line string) { board.Heartbeat("dnsx-brute") }),
+		runner.WithStderrCallback(func(line string) { board.Heartbeat("dnsx-brute") }))
 
-        finalize(board, "dnsx-brute", r)
-        return r.Lines, r.Stderr
+	finalize(board, "dnsx-brute", r)
+	return r.Lines, r.Stderr
 }
 
 func (m *Module) runPuredns(ctx context.Context, domain string, board *logger.ProgressBoard) ([]string, []string) {
@@ -577,7 +612,7 @@ func (m *Module) runPuredns(ctx context.Context, domain string, board *logger.Pr
 
 	// If puredns returned 0 results (due to massdns environment or resolver issues),
 	// automatically fall back to dnsx-brute so DNS bruteforcing never fails silently.
-	if runner.IsAvailable("dnsx") {
+	if m.cfg.ToolAvailable("dnsx") {
 		m.log.Debug("puredns found 0 domains — attempting dnsx-brute fallback for %s", domain)
 		return m.runDnsxBrute(ctx, domain, board)
 	}
@@ -587,73 +622,73 @@ func (m *Module) runPuredns(ctx context.Context, domain string, board *logger.Pr
 }
 
 func (m *Module) runPTRSweep(ctx context.Context, board *logger.ProgressBoard) {
-        for _, cidr := range m.cfg.Target.IPRanges {
-                board.Register("dnsx-ptr", cidr)
-                // Pipe CIDR into dnsx via stdin — no shell, no injection risk.
-                // Previously used `sh -c "echo $CIDR | dnsx ..."` which would
-                // execute arbitrary commands if a CIDR contained a backtick,
-                // $, ;, or any other shell metacharacter.
-                r := runner.Run(ctx, "dnsx", []string{"-silent", "-resp-only", "-ptr"},
-                        runner.WithStdin(cidr),
-                        runner.WithTimeout(5*time.Minute))
-                if r.Err == nil && len(r.Lines) > 0 {
-                        m.store.AddSubdomains(m.scope.FilterList(r.Lines))
-                        board.Done("dnsx-ptr", len(r.Lines))
-                } else {
-                        board.Fail("dnsx-ptr", r.DiagString())
-                }
-        }
+	for _, cidr := range m.cfg.Target.IPRanges {
+		board.Register("dnsx-ptr", cidr)
+		// Pipe CIDR into dnsx via stdin — no shell, no injection risk.
+		// Previously used `sh -c "echo $CIDR | dnsx ..."` which would
+		// execute arbitrary commands if a CIDR contained a backtick,
+		// $, ;, or any other shell metacharacter.
+		r := runner.Run(ctx, "dnsx", []string{"-silent", "-resp-only", "-ptr"},
+			runner.WithStdin(cidr),
+			runner.WithTimeout(5*time.Minute))
+		if r.Err == nil && len(r.Lines) > 0 {
+			m.store.AddSubdomains(m.scope.FilterList(r.Lines))
+			board.Done("dnsx-ptr", len(r.Lines))
+		} else {
+			board.Fail("dnsx-ptr", r.DiagString())
+		}
+	}
 }
 
 func (m *Module) runASNMap(ctx context.Context, asn string, board *logger.ProgressBoard) {
-        path := "asnmap"
-        if tcfg, ok := m.cfg.Tools["asnmap"]; ok && tcfg.Path != "" {
-                path = tcfg.Path
-        }
-        if !runner.IsAvailable(path) {
-                board.Skip("asnmap", "not found — install: go install github.com/projectdiscovery/asnmap/cmd/asnmap@latest")
-                return
-        }
-        board.Register("asnmap", asn)
-        r := runner.Run(ctx, path, []string{"-a", asn, "-silent"}, runner.WithTimeout(2*time.Minute))
-        finalize(board, "asnmap", r)
-        // asnmap returns IP ranges (CIDRs like "1.2.3.0/24"). Storing
-        // them as subdomains was a semantic bug — they're not hostnames.
-        // The store now has a dedicated IPRanges field. asnmap also
-        // returns hostnames it discovers while walking the ASN; we
-        // route those to the subdomain store.
-        if len(r.Lines) > 0 {
-                var cidrs, domains []string
-                for _, line := range r.Lines {
-                        line = strings.TrimSpace(line)
-                        if line == "" {
-                                continue
-                        }
-                        if strings.Contains(line, "/") {
-                                // CIDR — store in IP ranges
-                                m.store.AddIPRange(line)
-                                cidrs = append(cidrs, line)
-                        } else if strings.Contains(line, ".") && !strings.ContainsAny(line, " \t/\\") {
-                                // hostname — store as subdomain
-                                domains = append(domains, line)
-                        }
-                }
-                if len(domains) > 0 {
-                        m.store.AddSubdomainsFromSource(m.scope.FilterList(domains), "asnmap")
-                }
-                m.log.Debug("asnmap: %d CIDRs + %d domains", len(cidrs), len(domains))
-        }
+	path := "asnmap"
+	if tcfg, ok := m.cfg.Tools["asnmap"]; ok && tcfg.Path != "" {
+		path = tcfg.Path
+	}
+	if !m.cfg.ToolAvailable(path) {
+		board.Skip("asnmap", "not found — install: go install github.com/projectdiscovery/asnmap/cmd/asnmap@latest")
+		return
+	}
+	board.Register("asnmap", asn)
+	r := runner.Run(ctx, path, []string{"-a", asn, "-silent"}, runner.WithTimeout(2*time.Minute))
+	finalize(board, "asnmap", r)
+	// asnmap returns IP ranges (CIDRs like "1.2.3.0/24"). Storing
+	// them as subdomains was a semantic bug — they're not hostnames.
+	// The store now has a dedicated IPRanges field. asnmap also
+	// returns hostnames it discovers while walking the ASN; we
+	// route those to the subdomain store.
+	if len(r.Lines) > 0 {
+		var cidrs, domains []string
+		for _, line := range r.Lines {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			if strings.Contains(line, "/") {
+				// CIDR — store in IP ranges
+				m.store.AddIPRange(line)
+				cidrs = append(cidrs, line)
+			} else if strings.Contains(line, ".") && !strings.ContainsAny(line, " \t/\\") {
+				// hostname — store as subdomain
+				domains = append(domains, line)
+			}
+		}
+		if len(domains) > 0 {
+			m.store.AddSubdomainsFromSource(m.scope.FilterList(domains), "asnmap")
+		}
+		m.log.Debug("asnmap: %d CIDRs + %d domains", len(cidrs), len(domains))
+	}
 }
 
 // finalize updates the board based on a runner.Result
 func finalize(board *logger.ProgressBoard, name string, r *runner.Result) {
-        if r.IsTimeout() {
-                board.Timeout(name, len(r.Lines))
-        } else if r.Err != nil && len(r.Lines) == 0 {
-                board.Fail(name, r.DiagString())
-        } else {
-                board.Done(name, len(r.Lines))
-        }
+	if r.IsTimeout() {
+		board.Timeout(name, len(r.Lines))
+	} else if r.Err != nil && len(r.Lines) == 0 {
+		board.Fail(name, r.DiagString())
+	} else {
+		board.Done(name, len(r.Lines))
+	}
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -708,24 +743,24 @@ func isValidDomain(s string) bool {
 //  3. Well-known SecLists paths
 //  4. ./wordlists/subdomains.txt
 func findWordlist(cfg *config.Config) string {
-        // Allow user override via config / CLI flag
-        if cfg != nil && cfg.WordlistPath != "" && util.FileExists(cfg.WordlistPath) {
-                return cfg.WordlistPath
-        }
-        home, _ := os.UserHomeDir()
-        for _, p := range []string{
-                filepath.Join(home, ".config", "reconx", "wordlists", "subdomains.txt"),
-                "/usr/share/wordlists/seclists/Discovery/DNS/subdomains-top1million-20000.txt",
-                "/usr/share/wordlists/seclists/Discovery/DNS/subdomains-top1million-5000.txt",
-                "/usr/share/wordlists/seclists/Discovery/DNS/bitquark-subdomains-top100000.txt",
-                "/usr/share/wordlists/best-dns-wordlist.txt",
-                "./wordlists/subdomains.txt",
-        } {
-                if util.FileExists(p) {
-                        return p
-                }
-        }
-        return ""
+	// Allow user override via config / CLI flag
+	if cfg != nil && cfg.WordlistPath != "" && util.FileExists(cfg.WordlistPath) {
+		return cfg.WordlistPath
+	}
+	home, _ := os.UserHomeDir()
+	for _, p := range []string{
+		filepath.Join(home, ".config", "reconx", "wordlists", "subdomains.txt"),
+		"/usr/share/wordlists/seclists/Discovery/DNS/subdomains-top1million-20000.txt",
+		"/usr/share/wordlists/seclists/Discovery/DNS/subdomains-top1million-5000.txt",
+		"/usr/share/wordlists/seclists/Discovery/DNS/bitquark-subdomains-top100000.txt",
+		"/usr/share/wordlists/best-dns-wordlist.txt",
+		"./wordlists/subdomains.txt",
+	} {
+		if util.FileExists(p) {
+			return p
+		}
+	}
+	return ""
 }
 
 // findResolvers finds a DNS resolvers list. Priority:
@@ -733,19 +768,19 @@ func findWordlist(cfg *config.Config) string {
 //  2. reconx config dir
 //  3. ./resolvers.txt
 func findResolvers(cfg *config.Config) string {
-        if cfg != nil && cfg.ResolversPath != "" && util.FileExists(cfg.ResolversPath) {
-                return cfg.ResolversPath
-        }
-        for _, p := range []string{
-                os.ExpandEnv("$HOME/.config/reconx/resolvers.txt"),
-                "/root/.config/reconx/resolvers.txt",
-                "./resolvers.txt",
-        } {
-                if util.FileExists(p) {
-                        return p
-                }
-        }
-        return ""
+	if cfg != nil && cfg.ResolversPath != "" && util.FileExists(cfg.ResolversPath) {
+		return cfg.ResolversPath
+	}
+	for _, p := range []string{
+		os.ExpandEnv("$HOME/.config/reconx/resolvers.txt"),
+		"/root/.config/reconx/resolvers.txt",
+		"./resolvers.txt",
+	} {
+		if util.FileExists(p) {
+			return p
+		}
+	}
+	return ""
 }
 
 // ── Wildcard detection ────────────────────────────────────────────────────────────────
@@ -759,58 +794,58 @@ func findResolvers(cfg *config.Config) string {
 // Wildcard detection is a WARN only — it does not stop the scan.
 // The user is informed so they can interpret brute-force results carefully.
 func (m *Module) runWildcardCheck(ctx context.Context, domain string, board *logger.ProgressBoard) {
-        board.Register("wildcard-check", domain)
+	board.Register("wildcard-check", domain)
 
-        // Generate a random label that almost certainly doesn't exist
-        rndLabel := fmt.Sprintf("reconx-wc-test-77293819.%s", domain)
+	// Generate a random label that almost certainly doesn't exist
+	rndLabel := fmt.Sprintf("reconx-wc-test-77293819.%s", domain)
 
-        // First: use dig (universally available on Linux/macOS)
-        detected := false
-        if runner.IsAvailable("dig") {
-                digCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-                defer cancel()
-                r := runner.Run(digCtx, "dig", []string{"+short", rndLabel})
-                if r.Err == nil && len(r.Lines) > 0 {
-                        for _, line := range r.Lines {
-                                line = strings.TrimSpace(line)
-                                if line != "" && !strings.HasPrefix(line, ";;") {
-                                        detected = true
-                                        break
-                                }
-                        }
-                }
-        }
+	// First: use dig (universally available on Linux/macOS)
+	detected := false
+	if m.cfg.ToolAvailable("dig") {
+		digCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		r := runner.Run(digCtx, "dig", []string{"+short", rndLabel})
+		if r.Err == nil && len(r.Lines) > 0 {
+			for _, line := range r.Lines {
+				line = strings.TrimSpace(line)
+				if line != "" && !strings.HasPrefix(line, ";;") {
+					detected = true
+					break
+				}
+			}
+		}
+	}
 
-        // Second pass: puredns --wildcard-tests if available
-        if !detected && runner.IsAvailable("puredns") {
-                resolvers := findResolvers(m.cfg)
-                pureArgs := []string{"bruteforce", "/dev/null", domain, "--wildcard-tests", "50"}
-                if resolvers != "" {
-                        pureArgs = append(pureArgs, "-r", resolvers)
-                }
-                pureCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-                defer cancel()
-                r := runner.Run(pureCtx, "puredns", pureArgs)
-                // puredns exits non-zero when wildcard is detected — check stderr
-                if r.Err != nil && len(r.Stderr) > 0 {
-                        for _, line := range r.Stderr {
-                                if strings.Contains(strings.ToLower(line), "wildcard") {
-                                        detected = true
-                                        break
-                                }
-                        }
-                }
-        }
+	// Second pass: puredns --wildcard-tests if available
+	if !detected && m.cfg.ToolAvailable("puredns") {
+		resolvers := findResolvers(m.cfg)
+		pureArgs := []string{"bruteforce", "/dev/null", domain, "--wildcard-tests", "50"}
+		if resolvers != "" {
+			pureArgs = append(pureArgs, "-r", resolvers)
+		}
+		pureCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		r := runner.Run(pureCtx, "puredns", pureArgs)
+		// puredns exits non-zero when wildcard is detected — check stderr
+		if r.Err != nil && len(r.Stderr) > 0 {
+			for _, line := range r.Stderr {
+				if strings.Contains(strings.ToLower(line), "wildcard") {
+					detected = true
+					break
+				}
+			}
+		}
+	}
 
-        if detected {
-                board.Fail("wildcard-check", fmt.Sprintf(
-                        "WILDCARD DNS detected for %s — brute-force may have false positives", domain))
-                m.log.Warn("Wildcard DNS detected for %s — brute-force results will need additional filtering.", domain)
-                m.log.Warn("puredns/dnsx will attempt to filter wildcards automatically using their built-in wildcard filter.")
-        } else {
-                board.Done("wildcard-check", 0)
-                m.log.Debug("No wildcard DNS detected for %s", domain)
-        }
+	if detected {
+		board.Fail("wildcard-check", fmt.Sprintf(
+			"WILDCARD DNS detected for %s — brute-force may have false positives", domain))
+		m.log.Warn("Wildcard DNS detected for %s — brute-force results will need additional filtering.", domain)
+		m.log.Warn("puredns/dnsx will attempt to filter wildcards automatically using their built-in wildcard filter.")
+	} else {
+		board.Done("wildcard-check", 0)
+		m.log.Debug("No wildcard DNS detected for %s", domain)
+	}
 }
 
 // ── Massdns (large-scale resolution) ────────────────────────────────────────────────────
@@ -819,44 +854,44 @@ func (m *Module) runWildcardCheck(ctx context.Context, domain string, board *log
 // significantly faster than puredns/dnsx for 10k+ entries.
 // Results are merged back into the store as additional subdomains.
 func (m *Module) runMassdns(ctx context.Context, domains []string) {
-        if len(domains) == 0 {
-                return
-        }
-        tcfg := m.cfg.Tools["massdns"]
-        path := "massdns"
-        if tcfg.Path != "" {
-                path = tcfg.Path
-        }
-        if !runner.IsAvailable(path) {
-                m.log.Debug("massdns not found — skipping mass resolution (puredns already ran)")
-                return
-        }
+	if len(domains) == 0 {
+		return
+	}
+	tcfg := m.cfg.Tools["massdns"]
+	path := "massdns"
+	if tcfg.Path != "" {
+		path = tcfg.Path
+	}
+	if !m.cfg.ToolAvailable(path) {
+		m.log.Debug("massdns not found — skipping mass resolution (puredns already ran)")
+		return
+	}
 
-        resolvers := findResolvers(m.cfg)
-        if resolvers == "" {
-                m.log.Debug("massdns: no resolvers file found — skipping")
-                return
-        }
+	resolvers := findResolvers(m.cfg)
+	if resolvers == "" {
+		m.log.Debug("massdns: no resolvers file found — skipping")
+		return
+	}
 
-        // Write domains to a temp file
-        tmpFile := m.outDir + "/.massdns_input.tmp"
-        if err := store.SaveRaw(tmpFile, domains); err != nil {
-                m.log.Warn("massdns: could not write input file: %v", err)
-                return
-        }
-        defer os.Remove(tmpFile)
+	// Write domains to a temp file
+	tmpFile := m.outDir + "/.massdns_input.tmp"
+	if err := store.SaveRaw(tmpFile, domains); err != nil {
+		m.log.Warn("massdns: could not write input file: %v", err)
+		return
+	}
+	defer os.Remove(tmpFile)
 
-        outFile := m.outDir + "/massdns_raw.txt"
-        args := []string{"-r", resolvers, "-t", "A", "-o", "S", "-w", outFile, tmpFile}
+	outFile := m.outDir + "/massdns_raw.txt"
+	args := []string{"-r", resolvers, "-t", "A", "-o", "S", "-w", outFile, tmpFile}
 
-        m.log.Tool("massdns", fmt.Sprintf("%d subdomains → %s", len(domains), outFile))
-        m.log.ToolCmd("massdns", args, "")
+	m.log.Tool("massdns", fmt.Sprintf("%d subdomains → %s", len(domains), outFile))
+	m.log.ToolCmd("massdns", args, "")
 
-        start := time.Now()
-        timeout := time.Duration(tcfg.Timeout) * time.Second
-        if timeout == 0 {
-                timeout = 30 * time.Minute
-        }
+	start := time.Now()
+	timeout := time.Duration(tcfg.Timeout) * time.Second
+	if timeout == 0 {
+		timeout = 30 * time.Minute
+	}
 	r := runner.Run(ctx, path, args, runner.WithTimeout(timeout))
 
 	// Massdns writes output directly to outFile (-w). Read it from disk.

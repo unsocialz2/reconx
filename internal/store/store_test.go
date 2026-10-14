@@ -181,4 +181,3 @@ func TestAddSecret_DedupAndStripANSI(t *testing.T) {
 		t.Errorf("expected ANSI stripped value, got %q", s.Secrets[0].Value)
 	}
 }
-

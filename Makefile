@@ -1,5 +1,5 @@
 BINARY     := reconx
-VERSION    := v1.0.0
+VERSION    := v1.1.0
 BUILD_DIR  := ./dist
 MAIN       := ./cmd/reconx
 
@@ -22,14 +22,14 @@ install: build
 
 ## test: Run all tests
 test:
-	@go test ./... -v 2>&1
+	@go test -short -race ./cmd/... ./internal/... ./pkg/...
 
 ## lint: Run go vet
 lint:
-	@go vet ./...
+	@go vet ./cmd/... ./internal/... ./pkg/...
 	@echo "  \033[32m✓\033[0m No issues found"
 
-## release: Cross-compile for Linux, macOS, Windows
+## release: Cross-compile for Linux and macOS (POSIX process groups)
 release:
 	@mkdir -p $(BUILD_DIR)
 	@echo "  \033[36m▶\033[0m Cross-compiling..."
@@ -37,7 +37,6 @@ release:
 	GOOS=linux   GOARCH=arm64   go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY)-linux-arm64   $(MAIN)
 	GOOS=darwin  GOARCH=amd64   go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY)-darwin-amd64  $(MAIN)
 	GOOS=darwin  GOARCH=arm64   go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY)-darwin-arm64  $(MAIN)
-	GOOS=windows GOARCH=amd64   go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY)-windows-amd64.exe $(MAIN)
 	@echo "  \033[32m✓\033[0m Binaries in $(BUILD_DIR)/"
 	@ls -lh $(BUILD_DIR)/
 

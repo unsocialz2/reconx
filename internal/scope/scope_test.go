@@ -3,7 +3,7 @@ package scope
 import (
 	"testing"
 
-	"github.com/reconx/reconx/internal/config"
+	"github.com/unsocialz2/reconx/internal/config"
 )
 
 func makeFilter(inScope, outScope []string, domains []string) *Filter {

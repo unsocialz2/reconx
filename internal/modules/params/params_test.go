@@ -1,20 +1,25 @@
 package params
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
 func TestGetJSFlagSupported(t *testing.T) {
-	// Should not panic, and should return consistent bool
-	hasHeader := getJSFlagSupported("header")
-	hasInsecure := getJSFlagSupported("insecure")
-	hasFake := getJSFlagSupported("non_existent_flag_xyz")
-
-	if !hasHeader {
-		t.Errorf("expected header to be supported, got false")
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "getJS")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nprintf '%s\\n' '--header value --insecure'\n"), 0700); err != nil {
+		t.Fatal(err)
 	}
-	if hasFake {
-		t.Errorf("expected non_existent_flag_xyz to NOT be supported, got true")
+	t.Setenv("PATH", dir)
+	getJSFlagCacheLoaded = false
+	getJSFlagCache = map[string]bool{}
+	t.Cleanup(func() { getJSFlagCacheLoaded = false; getJSFlagCache = map[string]bool{} })
+	if !getJSFlagSupported("header") || !getJSFlagSupported("insecure") {
+		t.Fatal("help flags were not parsed")
 	}
-	t.Logf("Probe results: header=%v, insecure=%v, fake=%v", hasHeader, hasInsecure, hasFake)
+	if getJSFlagSupported("non_existent_flag_xyz") {
+		t.Fatal("unknown flag accepted")
+	}
 }

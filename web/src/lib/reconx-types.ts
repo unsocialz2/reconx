@@ -1,5 +1,20 @@
-export type ViewMode = 'new-scan' | 'history' | 'progress' | 'results' | 'guide';
-export type PhaseKey = 'subs' | 'alive' | 'ports' | 'urls' | 'dirs' | 'params' | 'js' | 'cloud' | 'cors' | 'vuln';
+export type ViewMode =
+  | "new-scan"
+  | "history"
+  | "progress"
+  | "results"
+  | "guide";
+export type PhaseKey =
+  | "subs"
+  | "alive"
+  | "ports"
+  | "urls"
+  | "dirs"
+  | "params"
+  | "js"
+  | "cloud"
+  | "cors"
+  | "vuln";
 
 export interface SavedSettings {
   githubToken?: string;
@@ -19,6 +34,8 @@ export interface SavedSettings {
 }
 
 export interface ScanConfig {
+  workers?: number;
+  cloudAssets?: string[];
   domains: string[];
   ipRanges?: string[];
   asns?: string[];
@@ -56,7 +73,7 @@ export interface ScanMetadata {
   orgName?: string;
   startTime: string;
   endTime?: string;
-  status: 'running' | 'completed' | 'failed' | 'stopped';
+  status: "running" | "completed" | "partial" | "failed" | "stopped";
   outputDir: string;
   pid?: number;
   config?: ScanConfig;
