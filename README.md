@@ -2,26 +2,17 @@
 
 ReconX orchestrates scoped bug bounty reconnaissance with a Go CLI, a local web dashboard, complete scan checkpoints, and HTML/JSON reports. Scanner matches and secret patterns are candidates that require impact validation.
 
-## Build and install
-
-For step-by-step setup, dependency checks, an offline CLI smoke test, and troubleshooting, see [INSTALLATION.md](INSTALLATION.md).
-
-Requirements: Go 1.22+ for ReconX; Node 22+ for the dashboard. Linux and macOS are supported. The subprocess runner uses POSIX process groups; Windows is not supported.
+## Install
 
 ```bash
 git clone https://github.com/unsocialz2/reconx.git
 cd reconx
-make build
-./reconx --help
+bash install.sh
 ```
 
-To install only ReconX into `~/.local/bin`:
+The installer handles OS prerequisites, user-local Go/Node when needed, the CLI, pinned tools (including Gitleaks), nuclei templates, dashboard build, offline checks, and Bash/Zsh PATH setup. It does not scan a target. Linux apt/dnf and macOS with Homebrew/Apple command-line tools are supported; Windows is not supported.
 
-```bash
-bash install.sh --binary-only
-```
-
-`bash install.sh` additionally installs pinned core tools through Go's checksum-verified module downloads. Some tools require a newer Go toolchain and naabu requires libpcap headers. The installer reports failures, does not remove system packages, and does not edit shell profiles. Set `RECONX_GO` or `RECONX_BIN_DIR` to override Go or the installation directory. Update nuclei templates explicitly with `nuclei -update-templates`; record the template version when comparing runs.
+Start the dashboard with `~/.local/bin/reconx-web`, or use `./reconx --help` from the repository. For CLI-only setup: `bash install.sh --cli-only`. See [INSTALLATION.md](INSTALLATION.md) for the short guide, options, and log locations.
 
 ## CLI
 
@@ -51,7 +42,7 @@ Cloud checks are opt-in and require exact asset URLs:
   --cloud-asset https://example-assets.s3.amazonaws.com/
 ```
 
-Cloud probes use HEAD and record reachability, not a claim of bucket exposure. CORS observations are informational candidates; wildcard ACAO plus credentials is not reported as credentialed access. Secret detection runs without automatic credential verification against third-party APIs.
+Cloud probes use HEAD and record reachability, not a claim of bucket exposure. CORS observations are informational candidates; wildcard ACAO plus credentials is not reported as credentialed access. Secret detection runs without automatic credential verification against third-party APIs. The installer supplies Gitleaks; other secret scanners and screenshots are optional.
 
 API tokens can be supplied using `GITHUB_TOKEN`, `PDCP_API_KEY`, `SHODAN_API_KEY`, `VT_API_KEY`, and `SECURITYTRAILS_API_KEY`. Prefer environment variables to CLI tokens. Scan outputs and settings are private; raw evidence/checkpoints may contain credentials and must not be shared unredacted.
 
@@ -112,7 +103,7 @@ out_of_scope = ["staging.example.com"]
 6. JS discovery/downloads and candidate secret detection with installed scanners.
 7. Nuclei HTTP categories, raw JSONL evidence, JSON and HTML reports.
 
-Optional binaries are not all installed automatically. Missing/disabled tools and truncation limits appear in coverage. Host identity includes scheme and port. JSON/checkpoints retain all discovered URLs; HTML limits its displayed URL list to 5,000 and discloses that limit.
+Additional optional binaries are not all installed automatically. Missing/disabled tools and truncation limits appear in coverage. Host identity includes scheme and port. JSON/checkpoints retain all discovered URLs; HTML limits its displayed URL list to 5,000 and discloses that limit.
 
 ## Checkpoints and results
 

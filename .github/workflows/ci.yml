@@ -16,7 +16,8 @@ jobs:
       - run: make build
       - run: make test
       - run: make lint
-      - run: bash -n install.sh
+      - run: bash -n install.sh tests/install_test.sh
+      - run: bash tests/install_test.sh
       - run: RECONX_BIN_DIR="$RUNNER_TEMP/reconx-bin" bash install.sh --binary-only
   web:
     runs-on: ubuntu-latest
