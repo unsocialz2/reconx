@@ -4,6 +4,8 @@ ReconX orchestrates scoped bug bounty reconnaissance with a Go CLI, a local web 
 
 ## Build and install
 
+For step-by-step setup, dependency checks, an offline CLI smoke test, and troubleshooting, see [INSTALLATION.md](INSTALLATION.md).
+
 Requirements: Go 1.22+ for ReconX; Node 22+ for the dashboard. Linux and macOS are supported. The subprocess runner uses POSIX process groups; Windows is not supported.
 
 ```bash
