@@ -172,17 +172,30 @@ func (l *Logger) Tool(name, target string) {
 	l.filePrintf("%s [RUN] %s → %s\n", l.tsPlain(), name, target)
 }
 
-// ToolCmd logs a tool execution with the exact command being run
+// ToolCmd logs the requested command before runner policy overrides.
 func (l *Logger) ToolCmd(name string, args []string, stdin string) {
+	l.logCommand("REQUEST", name, args, stdin)
+}
+
+// EffectiveToolCmd logs the resolved executable and final policy arguments.
+func (l *Logger) EffectiveToolCmd(name string, args []string) {
+	l.logCommand("CMD", name, args, "")
+}
+
+func (l *Logger) logCommand(label, name string, args []string, stdin string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	safe := append([]string{}, args...)
-	for i, a := range safe {
-		lower := strings.ToLower(a)
-		if strings.Contains(lower, "token=") || strings.Contains(lower, "key=") {
-			safe[i] = strings.SplitN(a, "=", 2)[0] + "=[REDACTED]"
+	for i, a := range args {
+		flag := strings.ToLower(strings.SplitN(a, "=", 2)[0])
+		sensitive := flag == "-h" || flag == "--header" || flag == "-header" || flag == "-headers" ||
+			(flag == "-c" && strings.Contains(name, "mantra")) || strings.Contains(flag, "token") || strings.Contains(flag, "key") || strings.Contains(flag, "cookie")
+		if !sensitive {
+			continue
 		}
-		if (a == "-H" || strings.Contains(lower, "token") || strings.Contains(lower, "key")) && !strings.Contains(a, "=") && i+1 < len(safe) {
+		if strings.Contains(a, "=") {
+			safe[i] = strings.SplitN(a, "=", 2)[0] + "=[REDACTED]"
+		} else if i+1 < len(safe) {
 			safe[i+1] = "[REDACTED]"
 		}
 	}
@@ -194,9 +207,9 @@ func (l *Logger) ToolCmd(name string, args []string, stdin string) {
 	}
 	// Always show in verbose mode
 	if l.verbose {
-		fmt.Printf("  %s %s %s\n", l.ts(), c(hBlack, "  CMD:"), c(hBlack, cmdStr))
+		fmt.Printf("  %s %s %s\n", l.ts(), c(hBlack, "  "+label+":"), c(hBlack, cmdStr))
 	}
-	l.filePrintf("%s [CMD] %s\n", l.tsPlain(), cmdStr)
+	l.filePrintf("%s [%s] %s\n", l.tsPlain(), label, cmdStr)
 }
 
 // ToolDone logs tool completion with result count and timing

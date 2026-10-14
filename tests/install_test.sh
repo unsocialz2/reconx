@@ -40,6 +40,12 @@ for file in checkpoint.json manifest.json results.json report.html reconx.log;do
 done
 CLI
   chmod +x "$out" ;;
+ install)
+  name="${2##*/}";name="${name%%@*}"
+  [[ "$2" != *gitleaks* ]] || name=gitleaks
+  mkdir -p "$GOBIN"
+  printf '#!/bin/sh\nexit 0\n' > "$GOBIN/$name"
+  chmod +x "$GOBIN/$name" ;;
  *) exit 3 ;;
 esac
 GO
@@ -72,6 +78,7 @@ case "$url" in
  https://go.dev/dl/*.tar.gz) cp "$FAKE_DOWNLOADS/${url##*/}" "$out" ;;
  https://nodejs.org/dist/latest-v22.x/SHASUMS256.txt) cp "$FAKE_DOWNLOADS/node-checksums" "$out" ;;
  https://nodejs.org/dist/v22.*/*.tar.gz) cp "$FAKE_DOWNLOADS/${url##*/}" "$out" ;;
+ https://raw.githubusercontent.com/danielmiessler/SecLists/*/Discovery/DNS/subdomains-top1million-5000.txt) cp "$FAKE_DOWNLOADS/dns-wordlist.txt" "$out" ;;
  *) echo "Unexpected download: $url" >&2;exit 8 ;;
 esac
 CURL
@@ -144,3 +151,22 @@ bash "$FIXTURE/project/install.sh" --skip-system-deps --skip-tools --skip-checks
 "$FIXTURE/bin/reconx-web" > "$FIXTURE/launcher.log"
 grep -q 'Fixture dashboard launcher works' "$FIXTURE/launcher.log"
 printf 'Installer tests passed: repeat runs, safe smoke flags, options, Go/Node bootstrap, checksum rejection, and web launcher.\n'
+
+# Tool setup fetches a verified DNS wordlist and preserves a user's custom one.
+printf 'www\napi\nmail\n' > "$FIXTURE/download/dns-wordlist.txt"
+python3 - "$FIXTURE/project/install.sh" "$FIXTURE/download/dns-wordlist.txt" <<'PYDNS'
+import hashlib,sys,pathlib
+p=pathlib.Path(sys.argv[1]);sha=hashlib.sha256(pathlib.Path(sys.argv[2]).read_bytes()).hexdigest()
+p.write_text(p.read_text().replace('e331367c140298cb179114fdeefa78f58f696219f0dec017a28bb79487cfcf19',sha))
+PYDNS
+bash "$FIXTURE/project/install.sh" --skip-system-deps --cli-only --skip-checks --no-profile > "$FIXTURE/dns-install.log" 2>&1
+cmp "$FIXTURE/download/dns-wordlist.txt" "$FIXTURE/setup/wordlists/subdomains.txt"
+printf 'custom-user-wordlist\n' > "$FIXTURE/setup/wordlists/subdomains.txt"
+bash "$FIXTURE/project/install.sh" --skip-system-deps --cli-only --skip-checks --no-profile > "$FIXTURE/dns-repeat.log" 2>&1
+grep -qx 'custom-user-wordlist' "$FIXTURE/setup/wordlists/subdomains.txt"
+rm "$FIXTURE/setup/wordlists/subdomains.txt"
+printf 'tampered\n' > "$FIXTURE/download/dns-wordlist.txt"
+if bash "$FIXTURE/project/install.sh" --skip-system-deps --cli-only --skip-checks --no-profile > "$FIXTURE/dns-bad-checksum.log" 2>&1;then echo 'DNS wordlist checksum mismatch accepted' >&2;exit 1;fi
+grep -q 'Checksum mismatch' "$FIXTURE/dns-bad-checksum.log"
+[[ ! -e "$FIXTURE/setup/wordlists/subdomains.txt" ]]
+printf 'DNS wordlist installer checks passed.\n'

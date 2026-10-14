@@ -44,6 +44,8 @@ const stuckAlertAfter = 60 * time.Second
 // ProgressBoard shows all running tools in a live-updating table with
 // throughput, stuck detection, and an aggregate summary header.
 type ProgressBoard struct {
+	parent  *ProgressBoard
+	prefix  string
 	mu      sync.Mutex
 	tools   map[string]*ToolStatus
 	order   []string // insertion order for stable display
@@ -70,6 +72,33 @@ func (l *Logger) NewProgressBoard() *ProgressBoard {
 	return b
 }
 
+// ForTarget shares the board while isolating each target's tool counters.
+func (b *ProgressBoard) ForTarget(target string) *ProgressBoard {
+	if b.parent != nil {
+		return b.parent.ForTarget(b.prefix + target)
+	}
+	return &ProgressBoard{parent: b, prefix: target + " / "}
+}
+
+// DoneIfRunning preserves failure/timeout states when callers merge results.
+func (b *ProgressBoard) DoneIfRunning(name string, count int) {
+	if b.parent != nil {
+		b.parent.DoneIfRunning(b.prefix+name, count)
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if t, ok := b.tools[name]; ok {
+		t.Count = count
+		if t.State == "running" || t.State == "done" {
+			t.State = "done"
+			t.Message = fmt.Sprintf("%d results", count)
+		} else if t.State == "timeout" {
+			t.Message = fmt.Sprintf("kept %d partial results", count)
+		}
+	}
+}
+
 // SetLiveStats registers a callback that returns live counts for the
 // summary header line. The pipeline sets this so the board can show
 // "TOTAL: 1247 subs | 89 live | 5421 urls" updating in real time.
@@ -81,6 +110,10 @@ func (b *ProgressBoard) SetLiveStats(fn func() map[string]int) {
 
 // Register adds a tool to the board as "running"
 func (b *ProgressBoard) Register(name, target string) {
+	if b.parent != nil {
+		b.parent.Register(b.prefix+name, target)
+		return
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	now := time.Now()
@@ -99,6 +132,10 @@ func (b *ProgressBoard) Register(name, target string) {
 
 // Update sets live count for a running tool and records a throughput sample.
 func (b *ProgressBoard) Update(name string, count int) {
+	if b.parent != nil {
+		b.parent.Update(b.prefix+name, count)
+		return
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	t, ok := b.tools[name]
@@ -123,6 +160,10 @@ func (b *ProgressBoard) Update(name string, count int) {
 // (e.g., httpx probing a host that turns out to be dead). This keeps
 // the tool from looking "stuck" while it's actively working.
 func (b *ProgressBoard) Heartbeat(name string) {
+	if b.parent != nil {
+		b.parent.Heartbeat(b.prefix + name)
+		return
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if t, ok := b.tools[name]; ok {
@@ -132,6 +173,10 @@ func (b *ProgressBoard) Heartbeat(name string) {
 
 // Done marks a tool as finished
 func (b *ProgressBoard) Done(name string, count int) {
+	if b.parent != nil {
+		b.parent.Done(b.prefix+name, count)
+		return
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if t, ok := b.tools[name]; ok {
@@ -166,6 +211,10 @@ func (b *ProgressBoard) SourceStats() []ToolStatus {
 
 // Fail marks a tool as failed
 func (b *ProgressBoard) Fail(name, reason string) {
+	if b.parent != nil {
+		b.parent.Fail(b.prefix+name, reason)
+		return
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if t, ok := b.tools[name]; ok {
@@ -177,6 +226,10 @@ func (b *ProgressBoard) Fail(name, reason string) {
 
 // Timeout marks a tool as timed-out with partial results
 func (b *ProgressBoard) Timeout(name string, partial int) {
+	if b.parent != nil {
+		b.parent.Timeout(b.prefix+name, partial)
+		return
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if t, ok := b.tools[name]; ok {
@@ -189,6 +242,10 @@ func (b *ProgressBoard) Timeout(name string, partial int) {
 
 // Skip marks a tool as skipped
 func (b *ProgressBoard) Skip(name, reason string) {
+	if b.parent != nil {
+		b.parent.Skip(b.prefix+name, reason)
+		return
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if _, exists := b.tools[name]; !exists {
@@ -220,6 +277,10 @@ func (b *ProgressBoard) Stop() {
 
 // PauseForLog clears the board temporarily so a permanent log line can print cleanly
 func (b *ProgressBoard) PauseForLog() {
+	if b.parent != nil {
+		b.parent.PauseForLog()
+		return
+	}
 	b.mu.Lock()
 	b.paused = true
 	b.mu.Unlock()
@@ -228,6 +289,10 @@ func (b *ProgressBoard) PauseForLog() {
 
 // ResumeAfterLog re-enables the board after a permanent log line was printed
 func (b *ProgressBoard) ResumeAfterLog() {
+	if b.parent != nil {
+		b.parent.ResumeAfterLog()
+		return
+	}
 	b.mu.Lock()
 	b.paused = false
 	b.mu.Unlock()

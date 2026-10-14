@@ -134,7 +134,7 @@ func (m *Module) Run(ctx context.Context) error {
 			mu.Lock()
 			added := m.store.AddURLs(filtered)
 			totalBy[t.name] = added
-			board.Done(t.name, len(filtered))
+			board.DoneIfRunning(t.name, len(filtered))
 			mu.Unlock()
 		}()
 	}
@@ -187,6 +187,7 @@ func (m *Module) runWayback(ctx context.Context, input string) []string {
 
 	r := runner.Run(ctx, path, nil,
 		runner.WithStdin(input),
+		runner.WithUniqueLines(),
 		runner.WithTimeout(timeout),
 		runner.WithStderrCallback(func(line string) {
 			m.log.Debug("waybackurls: %s", line)
@@ -240,6 +241,7 @@ func (m *Module) runWaymore(ctx context.Context, input string) []string {
 				timeout = 5 * time.Minute
 			}
 			r := runner.Run(ctx, "waymore", args,
+				runner.WithUniqueLines(),
 				runner.WithTimeout(timeout),
 				runner.WithStderrCallback(func(line string) { m.log.Debug("waymore[%s]: %s", d, line) }))
 			if r.Err != nil && len(r.Lines) == 0 {
@@ -286,6 +288,7 @@ func (m *Module) runGAU(ctx context.Context, input string) []string {
 			args := []string{"--subs", "--threads", "5", "--providers", "wayback,commoncrawl,otx,urlscan"}
 			m.log.ToolCmd("gau", append(args, d), "")
 			r := runner.Run(ctx, "gau", append(args, d),
+				runner.WithUniqueLines(),
 				runner.WithTimeout(timeout),
 				runner.WithStderrCallback(func(line string) { m.log.Debug("gau[%s]: %s", d, line) }))
 			if r.Err == nil || len(r.Lines) > 0 {
@@ -327,6 +330,7 @@ func (m *Module) runGAUPlus(ctx context.Context, input string) []string {
 			defer func() { <-sem }()
 			args := []string{"-subs", "-t", "5", "-random-agent"}
 			r := runner.Run(ctx, "gauplus", append(args, d),
+				runner.WithUniqueLines(),
 				runner.WithTimeout(timeout),
 				runner.WithStderrCallback(func(line string) { m.log.Debug("gauplus[%s]: %s", d, line) }))
 			if r.Err == nil || len(r.Lines) > 0 {
@@ -356,6 +360,7 @@ func (m *Module) runKatana(ctx context.Context, input string) []string {
 
 	r := runner.Run(ctx, "katana", args,
 		runner.WithStdin(input),
+		runner.WithUniqueLines(),
 		runner.WithTimeout(timeout),
 		runner.WithStderrCallback(func(line string) {
 			m.log.Debug("katana: %s", line)
@@ -391,6 +396,7 @@ func (m *Module) runHakrawler(ctx context.Context, input string) []string {
 
 	r := runner.Run(ctx, "hakrawler", args,
 		runner.WithStdin(input),
+		runner.WithUniqueLines(),
 		runner.WithTimeout(timeout),
 		runner.WithStderrCallback(func(line string) { m.log.Debug("hakrawler: %s", line) }))
 
@@ -437,6 +443,7 @@ func (m *Module) runGospider(ctx context.Context, input string) []string {
 	}
 
 	r := runner.Run(ctx, "gospider", args,
+		runner.WithUniqueLines(),
 		runner.WithTimeout(timeout),
 		runner.WithStderrCallback(func(line string) { m.log.Debug("gospider: %s", line) }))
 
@@ -496,6 +503,7 @@ func (m *Module) runParamSpider(ctx context.Context, input string) []string {
 			// Use -s flag for silent output (replaces --quiet which doesn't exist)
 			args := []string{"-d", d, "-s"}
 			r := runner.Run(ctx, "paramspider", args,
+				runner.WithUniqueLines(),
 				runner.WithTimeout(timeout),
 				runner.WithStderrCallback(func(line string) { m.log.Debug("paramspider[%s]: %s", d, line) }))
 			if r.Err == nil || len(r.Lines) > 0 {

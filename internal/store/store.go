@@ -371,9 +371,9 @@ func (s *Store) AddFinding(f *Finding) {
 }
 
 // AddSecret records a discovered secret, deduplicating identical findings
-func (s *Store) AddSecret(sec *Secret) {
+func (s *Store) AddSecret(sec *Secret) bool {
 	if sec == nil {
-		return
+		return false
 	}
 	sec.Value = strings.TrimSpace(util.StripANSI(sec.Value))
 	sec.Type = strings.TrimSpace(util.StripANSI(sec.Type))
@@ -385,10 +385,11 @@ func (s *Store) AddSecret(sec *Secret) {
 		s.SecretKeys = make(map[string]bool)
 	}
 	if s.SecretKeys[key] {
-		return
+		return false
 	}
 	s.SecretKeys[key] = true
 	s.Secrets = append(s.Secrets, sec)
+	return true
 }
 
 // AddDirResult records a directory/file fuzzing hit
@@ -664,40 +665,35 @@ func DataDir(outDir string) string {
 
 // IsWAFProtected returns true if wafw00f detected a WAF on the given host URL/domain.
 func (s *Store) IsWAFProtected(hostOrURL string) bool {
+	detected, _ := s.WAFStatus(hostOrURL)
+	return detected
+}
+
+// WAFStatus distinguishes untested endpoints from explicit negative detections.
+// Detection on a parent domain does not imply detection on every subdomain.
+func (s *Store) WAFStatus(hostOrURL string) (detected, known bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	// Normalise: strip protocol and path
-	clean := hostOrURL
-	for _, p := range []string{"https://", "http://"} {
-		clean = strings.TrimPrefix(clean, p)
-	}
-	if idx := strings.IndexAny(clean, "/?#"); idx != -1 {
-		clean = clean[:idx]
-	}
-	// Strip port
-	if idx := strings.LastIndex(clean, ":"); idx > 0 {
-		if _, err := fmt.Sscanf(clean[idx+1:], "%d", new(int)); err == nil {
-			clean = clean[:idx]
+	normalize := func(raw string) string {
+		if !strings.Contains(raw, "://") {
+			raw = "https://" + raw
 		}
+		u, err := url.Parse(raw)
+		if err != nil {
+			return ""
+		}
+		return strings.ToLower(u.Scheme + "://" + u.Host)
 	}
-	clean = strings.ToLower(strings.TrimSpace(clean))
+	clean := normalize(hostOrURL)
 	for _, w := range s.WAFResults {
-		if !w.Detected {
-			continue
-		}
-		wHost := strings.ToLower(strings.TrimSpace(w.Host))
-		// Strip protocol from stored host too
-		for _, p := range []string{"https://", "http://"} {
-			wHost = strings.TrimPrefix(wHost, p)
-		}
-		if idx := strings.IndexAny(wHost, "/?#"); idx != -1 {
-			wHost = wHost[:idx]
-		}
-		if wHost == clean || strings.HasSuffix(clean, "."+wHost) || strings.HasSuffix(wHost, "."+clean) {
-			return true
+		if clean != "" && normalize(w.Host) == clean {
+			known = true
+			if w.Detected {
+				return true, true
+			}
 		}
 	}
-	return false
+	return false, known
 }
 
 // GetWAFHosts returns live host URLs that are behind a WAF.
@@ -709,7 +705,7 @@ func (s *Store) GetWAFHosts() []string {
 		if url == "" {
 			url = "https://" + h.Domain
 		}
-		if s.IsWAFProtected(h.Domain) {
+		if s.IsWAFProtected(url) {
 			out = append(out, url)
 		}
 	}
@@ -725,7 +721,7 @@ func (s *Store) GetNonWAFHosts() []string {
 		if url == "" {
 			url = "https://" + h.Domain
 		}
-		if !s.IsWAFProtected(h.Domain) {
+		if !s.IsWAFProtected(url) {
 			out = append(out, url)
 		}
 	}

@@ -81,7 +81,7 @@ func (m *Module) Run(ctx context.Context) error {
 	// false positives (every word resolves). We detect this early and warn
 	// so the user can decide whether to continue or add --skip-bruteforce.
 	for _, domain := range m.cfg.Target.Domains {
-		m.runWildcardCheck(ctx, domain, board)
+		m.runWildcardCheck(ctx, domain, board.ForTarget(domain))
 	}
 
 	var wg sync.WaitGroup
@@ -90,7 +90,7 @@ func (m *Module) Run(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			m.enumerateDomain(ctx, domain, board)
+			m.enumerateDomain(ctx, domain, board.ForTarget(domain))
 		}()
 	}
 
@@ -134,7 +134,7 @@ func (m *Module) Run(ctx context.Context) error {
 		m.log.Warn("Failed to save subdomains.txt: %v", err)
 	}
 	for _, status := range board.SourceStats() {
-		if status.Name != "wildcard-check" && (status.State == "error" || status.State == "timeout") {
+		if !strings.HasSuffix(status.Name, " / wildcard-check") && (status.State == "error" || status.State == "timeout") {
 			return fmt.Errorf("source %s incomplete: %s", status.Name, status.Message)
 		}
 	}
@@ -155,7 +155,7 @@ func (m *Module) printSourceSummary(board *logger.ProgressBoard) {
 		return
 	}
 	m.log.Separator()
-	m.log.Info("Per-source yield:")
+	m.log.Info("Per-source yield by target (in-scope results):")
 	for _, t := range stats {
 		switch t.State {
 		case "done", "timeout":
@@ -222,8 +222,9 @@ func (m *Module) enumerateDomain(ctx context.Context, domain string, board *logg
 		{name: "censys", tokenKey: "censys", fn: m.runCensys},
 	}
 
-	hasPuredns := m.cfg.ToolAvailable("puredns")
-	hasShuffledns := m.cfg.ToolAvailable("shuffledns")
+	hasWordlist := findWordlist(m.cfg) != ""
+	hasPuredns := hasWordlist && findResolvers(m.cfg) != "" && m.cfg.ToolAvailable("puredns") && m.cfg.ToolAvailable("massdns")
+	hasShuffledns := hasWordlist && findResolvers(m.cfg) != "" && m.cfg.ToolAvailable("shuffledns") && m.cfg.ToolAvailable("massdns")
 
 	// ── WAVE 1: passive/API sources ─────────────────────────────────────────
 	// All HTTP/API-based tools run concurrently. This wave is light on DNS
@@ -237,6 +238,15 @@ func (m *Module) enumerateDomain(ctx context.Context, domain string, board *logg
 		var wg sync.WaitGroup
 		for _, t := range defs {
 			t := t
+
+			if t.active && !hasWordlist {
+				board.Skip(t.name, "no wordlist; rerun install.sh or set --wordlist")
+				continue
+			}
+			if (t.name == "puredns" || t.name == "shuffledns") && (findResolvers(m.cfg) == "" || !m.cfg.ToolAvailable("massdns")) {
+				board.Skip(t.name, "requires resolvers and massdns; falling back to dnsx")
+				continue
+			}
 
 			// Avoid running 3 heavy bruteforcers against the same wordlist
 			// concurrently. puredns is massdns-backed and fastest; fallback
@@ -279,6 +289,7 @@ func (m *Module) enumerateDomain(ctx context.Context, domain string, board *logg
 				clean := cleanLines(results)
 				filtered := m.scope.FilterList(clean)
 				dropped := len(clean) - len(filtered)
+				board.DoneIfRunning(t.name, len(filtered))
 				// Tag each subdomain with the source that found it
 				// so the HTML report can filter by source.
 				added := m.store.AddSubdomainsBulkWithSource(filtered, t.name)
@@ -401,7 +412,7 @@ func (m *Module) runAmass(ctx context.Context, domain string, board *logger.Prog
 	// amass v4 quirk: with -silent, results do NOT appear on stdout — they
 	// must be captured via -o <file>. Without -o, -silent silently discards
 	// everything (observed: 0 results vs 233 without the flag).
-	outFile := filepath.Join(m.outDir, "amass_raw.txt")
+	outFile := filepath.Join(m.outDir, domain+"_amass_raw.txt")
 	args := []string{"enum", "-passive", "-d", domain, "-silent", "-o", outFile}
 	// Under --no-timeout, omit -timeout entirely so amass runs to completion.
 	if timeout > 0 {
@@ -494,7 +505,7 @@ func (m *Module) runGithubSubs(ctx context.Context, domain string, board *logger
 	// the source yields 0 results despite finding 700+.
 	// Results also go to -o <file> clean; we use that as the source of truth
 	// and keep stdout only for the live board counter.
-	outFile := filepath.Join(m.outDir, "github_subs_raw.txt")
+	outFile := filepath.Join(m.outDir, domain+"_github_subs_raw.txt")
 
 	var count int
 	var mu sync.Mutex
@@ -585,7 +596,7 @@ func (m *Module) runPuredns(ctx context.Context, domain string, board *logger.Pr
 	// puredns bruteforce domain [flags] reads wordlist from stdin.
 	// Passing wordlist as an argument causes puredns to treat the wordlist path
 	// as the target domain and read 0 bytes from stdin, producing 0 results.
-	outFile := filepath.Join(m.outDir, "puredns_raw.txt")
+	outFile := filepath.Join(m.outDir, domain+"_puredns_raw.txt")
 	args := []string{"bruteforce", domain, "-w", outFile}
 	if resolvers != "" {
 		args = append(args, "-r", resolvers)

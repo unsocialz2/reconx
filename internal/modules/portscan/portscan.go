@@ -54,6 +54,7 @@ func (m *Module) Run(ctx context.Context) error {
 	for _, h := range hosts {
 		hostList = append(hostList, h.Domain)
 	}
+	hostList = util.Deduplicate(hostList)
 	input := strings.Join(hostList, "\n")
 
 	// Base args — use -top-ports 1000 for naabu v2
@@ -93,10 +94,7 @@ func (m *Module) Run(ctx context.Context) error {
 		m.log.ToolTimeout("naabu", portCount, time.Duration(tcfg.Timeout)*time.Second)
 	} else if r.Err != nil && portCount == 0 {
 		m.log.ToolError("naabu", fmt.Errorf("%s", r.DiagString()), r.Stderr)
-		m.log.Warn("naabu returned 0 open ports — possible causes:")
-		m.log.Warn("  1. All hosts are firewalled (common for cloud environments)")
-		m.log.Warn("  2. naabu requires root/CAP_NET_RAW for SYN scan — try running as root")
-		m.log.Warn("  3. Rate limit too high — reduce with -rate flag in config")
+
 	} else {
 		m.log.ToolDone("naabu", portCount, time.Since(start))
 	}
@@ -119,6 +117,12 @@ func (m *Module) Run(ctx context.Context) error {
 		m.logPortSummary()
 	}
 
+	if r.Err != nil {
+		return r.Err
+	}
+	if parseErrors > 0 {
+		return fmt.Errorf("naabu: %d output lines could not be parsed", parseErrors)
+	}
 	m.log.PhaseComplete("Port Scanning", portCount, time.Since(start))
 	return nil
 }

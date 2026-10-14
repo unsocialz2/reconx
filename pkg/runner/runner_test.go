@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -250,5 +251,31 @@ func TestRun_DefaultEmptyStdinDoesNotBlock(t *testing.T) {
 	}
 	if len(r.Lines) != 0 {
 		t.Errorf("expected 0 lines from empty stdin, got %v", r.Lines)
+	}
+}
+
+func TestBoundedUniqueCaptureStillStreams(t *testing.T) {
+	var delivered int
+	r := Run(context.Background(), "sh", []string{"-c", "printf 'one\\none\\ntwo\\nthree\\nfour\\n'"}, WithUniqueLines(), WithOutputLimit(2, 100), WithLineCallback(func(string) { delivered++ }))
+	if !errors.Is(r.Err, ErrOutputLimit) || len(r.Lines) != 2 || delivered != 5 {
+		t.Fatalf("result=%+v callback=%d", r, delivered)
+	}
+	r = Run(context.Background(), "sh", []string{"-c", "echo streamed"}, WithoutCapture(), WithLineCallback(func(string) { delivered++ }))
+	if r.Err != nil || len(r.Lines) != 0 || delivered != 6 {
+		t.Fatalf("stream-only %+v callback=%d", r, delivered)
+	}
+}
+
+func TestCancellationIsNotReportedAsUnexplainedKill(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	r := Run(ctx, "sh", []string{"-c", "echo ready; sleep 10"}, WithLineCallback(func(string) { cancel() }))
+	if !errors.Is(r.Err, context.Canceled) || !strings.Contains(r.DiagString(), "cancelled") {
+		t.Fatalf("%+v", r)
+	}
+}
+
+func TestVersionSkipsBanner(t *testing.T) {
+	if got := versionFromLines([]string{" __ __", "banner", "[INF] Current Version: v3.11.1"}); got != "v3.11.1" {
+		t.Fatal(got)
 	}
 }

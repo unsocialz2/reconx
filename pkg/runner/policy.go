@@ -29,6 +29,13 @@ type Policy struct {
 }
 type policyKey struct{}
 type observerKey struct{}
+type commandObserverKey struct{}
+
+// WithCommandObserver reports the resolved executable and effective arguments.
+// Consumers must redact credentials before logging them.
+func WithCommandObserver(ctx context.Context, fn func(string, []string)) context.Context {
+	return context.WithValue(ctx, commandObserverKey{}, fn)
+}
 
 func WithPolicy(ctx context.Context, p Policy) context.Context {
 	if p.Workers < 1 {
@@ -109,11 +116,11 @@ func policyArgs(key string, args []string, p *Policy, t ToolPolicy) []string {
 	// Bound tool-internal parallelism as well as concurrent subprocesses.
 	n := strconv.Itoa(p.Workers)
 	switch key {
-	case "httpx", "naabu", "mantra":
+	case "httpx":
 		args = MergeFlags(args, []string{"-threads", n})
-	case "nuclei", "katana":
+	case "naabu", "nuclei", "katana":
 		args = MergeFlags(args, []string{"-c", n})
-	case "ffuf", "feroxbuster":
+	case "mantra", "ffuf", "feroxbuster":
 		args = MergeFlags(args, []string{"-t", n})
 	}
 	if p.Header != "" {

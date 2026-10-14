@@ -32,3 +32,10 @@ func TestHTTPXParsesIPv6EndpointAndEscapedTitle(t *testing.T) {
 		t.Fatalf("bad parse: %+v", h)
 	}
 }
+
+func TestWAFJSONPreservesNegativeAndGenericDetections(t *testing.T) {
+	results, err := parseWAFJSON([]byte(`[{"url":"https://plain.example.test","detected":false,"firewall":"None"},{"url":"https://protected.example.test","detected":true,"firewall":"Generic"},{"url":"https://unknown.example.test"}]`))
+	if err != nil || len(results) != 2 || results[0].Detected || !results[1].Detected {
+		t.Fatalf("%+v %v", results, err)
+	}
+}

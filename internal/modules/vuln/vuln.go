@@ -3,9 +3,11 @@ package vuln
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -64,17 +66,32 @@ func (m *Module) Run(ctx context.Context) error {
 	}
 
 	dataDir := store.DataDir(m.outDir)
-	wafURLs, nowafURLs := m.store.SplitURLsByWAF(allURLs)
+	var wafURLs, nowafURLs, unknownURLs []string
+	for _, u := range allURLs {
+		detected, known := m.store.WAFStatus(u)
+		switch {
+		case !known:
+			unknownURLs = append(unknownURLs, u)
+		case detected:
+			wafURLs = append(wafURLs, u)
+		default:
+			nowafURLs = append(nowafURLs, u)
+		}
+	}
 
 	// Save targets in data/
 	targetFileNoWAF := dataDir + "/nuclei_targets_nowaf.txt"
 	targetFileWAF := dataDir + "/nuclei_targets_waf.txt"
 	_ = store.SaveRaw(targetFileNoWAF, nowafURLs)
 	_ = store.SaveRaw(targetFileWAF, wafURLs)
+	targetFileUnknown := dataDir + "/nuclei_targets_unknown.txt"
+	_ = store.SaveRaw(targetFileUnknown, unknownURLs)
 	_ = store.SaveRaw(dataDir+"/nuclei_targets_all.txt", allURLs)
 
-	m.log.Info("nuclei targets — non-WAF: %d URLs (fast) | WAF-protected: %d URLs (stealth)",
-		len(nowafURLs), len(wafURLs))
+	m.log.Info("nuclei targets — no WAF detected: %d | WAF detected: %d | WAF unknown: %d", len(nowafURLs), len(wafURLs), len(unknownURLs))
+	if len(unknownURLs) > 0 {
+		m.store.AddCoverage("nuclei: WAF status unknown for some endpoints; using conservative request settings")
+	}
 
 	// Template categories ordered by speed and impact (fastest & highest-yield first).
 	// Running fast, high-confidence categories first (takeovers, misconfigs, exposures, default-logins)
@@ -92,6 +109,7 @@ func (m *Module) Run(ctx context.Context) error {
 	}
 
 	totalFindings := 0
+	var incomplete []error
 
 	type targetGroup struct {
 		label      string
@@ -105,6 +123,7 @@ func (m *Module) Run(ctx context.Context) error {
 	groups := []targetGroup{
 		{label: "non-waf", targetFile: targetFileNoWAF, count: len(nowafURLs), rateLimit: "150", retries: "2", timeoutSec: "5"},
 		{label: "waf", targetFile: targetFileWAF, count: len(wafURLs), rateLimit: "60", retries: "1", timeoutSec: "5"},
+		{label: "unknown", targetFile: targetFileUnknown, count: len(unknownURLs), rateLimit: "60", retries: "1", timeoutSec: "10"},
 	}
 
 	for _, g := range groups {
@@ -160,32 +179,42 @@ func (m *Module) Run(ctx context.Context) error {
 			if catTimeout > catCap {
 				catTimeout = catCap
 			}
-			if (m.cfg.NoTimeout || runner.IsNoTimeout()) && catTimeout < 25*time.Minute {
+			// A configured per-tool timeout is an explicit per-category budget.
+			// Do not silently clamp the documented 60-minute default to 15 minutes.
+			if tcfg.Timeout > 0 {
+				catTimeout = time.Duration(tcfg.Timeout) * time.Second
+			}
+			if tcfg.Timeout == 0 && (m.cfg.NoTimeout || runner.IsNoTimeout()) && catTimeout < 25*time.Minute {
 				catTimeout = 25 * time.Minute
 			}
 
 			args := append(append([]string{}, baseArgs...), "-t", cat.template)
 			toolTag := fmt.Sprintf("nuclei:%s:%s", g.label, cat.name)
-			m.log.Tool(toolTag, fmt.Sprintf("%d targets", g.count))
+			m.log.Tool(toolTag, fmt.Sprintf("%d targets, maximum runtime %s", g.count, catTimeout))
 			m.log.ToolCmd("nuclei", args, "")
 
 			catStart := time.Now()
 			catFindings := 0
 			parseErrors := 0
+			var latestStats *nucleiStats
 
 			rawFile, openErr := os.OpenFile(filepath.Join(dataDir, "nuclei_"+g.label+"_"+cat.name+".jsonl"), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
 			if openErr != nil {
 				return openErr
 			}
 			r := runner.Run(ctx, nucleiPath, args,
+				runner.WithoutCapture(),
 				runner.WithTimeout(catTimeout),
 				runner.WithHardTimeout(catTimeout),
 				runner.WithStderrCallback(func(line string) {
 					line = strings.TrimSpace(util.StripANSI(line))
-					if strings.Contains(line, "Templates:") || strings.Contains(line, "RPS:") || strings.Contains(line, "%") {
+					if stats := parseNucleiStats(line); stats != nil {
+						latestStats = stats
+						m.log.Info("nuclei[%s/%s]: %s", g.label, cat.name, stats.summary())
+					} else if strings.Contains(line, "Templates:") || strings.Contains(line, "RPS:") || strings.Contains(line, "%") {
 						m.log.Info("nuclei[%s/%s]: %s", g.label, cat.name, line)
 					} else {
-						m.log.Debug("nuclei[%s/%s]: %s", g.label, cat.name, util.Truncate(line, 120))
+						m.log.Debug("nuclei[%s/%s]: %s", g.label, cat.name, line)
 					}
 				}),
 				runner.WithLineCallback(func(line string) {
@@ -213,24 +242,31 @@ func (m *Module) Run(ctx context.Context) error {
 			}
 			if r.IsTimeout() {
 				m.log.ToolTimeout(toolTag, catFindings, catTimeout)
-			} else if r.Err != nil && catFindings == 0 {
-				if len(r.Stderr) > 0 {
-					m.log.ToolError(toolTag, fmt.Errorf("%s", r.DiagString()), r.Stderr)
-				} else {
-					m.log.Debug("nuclei[%s/%s]: no findings (exit %d)", g.label, cat.name, r.ExitCode)
-					m.log.ToolDone(toolTag, 0, time.Since(catStart))
-				}
+			} else if r.Err != nil {
+				m.log.ToolError(toolTag, fmt.Errorf("%s", r.DiagString()), r.Stderr)
 			} else {
 				m.log.ToolDone(toolTag, catFindings, time.Since(catStart))
 			}
 
 			if parseErrors > 0 {
 				m.log.Warn("nuclei[%s/%s]: %d JSON parse errors", g.label, cat.name, parseErrors)
+				incomplete = append(incomplete, fmt.Errorf("%s: %d output parse/write errors", toolTag, parseErrors))
+			}
+			if r.Err != nil {
+				incomplete = append(incomplete, fmt.Errorf("%s: %w", toolTag, r.Err))
+			}
+			if latestStats != nil && (latestStats.Percent < 100 || latestStats.Errors > 0) {
+				reason := toolTag + ": " + latestStats.summary() + "; coverage incomplete"
+				m.store.AddCoverage(reason)
+				m.log.Warn("%s", reason)
+				incomplete = append(incomplete, errors.New(reason))
 			}
 		}
 	}
 
-	m.log.PhaseComplete("Vulnerability Scanning", totalFindings, time.Since(start))
+	if len(incomplete) == 0 {
+		m.log.PhaseComplete("Vulnerability Scanning", totalFindings, time.Since(start))
+	}
 
 	if totalFindings > 0 {
 		m.logFindingSummary()
@@ -244,7 +280,39 @@ func (m *Module) Run(ctx context.Context) error {
 			m.log.Warn("Could not save findings.txt: %v", err)
 		}
 	}
-	return nil
+	if len(incomplete) > 0 {
+		m.log.Warn("Nuclei coverage incomplete: zero findings does not mean the targets are vulnerability-free")
+	}
+	return errors.Join(incomplete...)
+}
+
+type nucleiStats struct{ Percent, Requests, Errors, Total int64 }
+
+// Nuclei emits statistics values as strings in some versions and numbers in others.
+func parseNucleiStats(line string) *nucleiStats {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal([]byte(line), &fields) != nil || fields["percent"] == nil || fields["requests"] == nil {
+		return nil
+	}
+	read := func(key string) (int64, bool) {
+		raw, ok := fields[key]
+		if !ok {
+			return 0, true
+		}
+		value, err := strconv.ParseInt(strings.Trim(string(raw), "\""), 10, 64)
+		return value, err == nil && value >= 0
+	}
+	p, pOK := read("percent")
+	r, rOK := read("requests")
+	e, eOK := read("errors")
+	total, totalOK := read("total")
+	if !pOK || !rOK || !eOK || !totalOK || p > 100 {
+		return nil
+	}
+	return &nucleiStats{p, r, e, total}
+}
+func (s *nucleiStats) summary() string {
+	return fmt.Sprintf("progress=%d%% requests=%d/%d errors=%d", s.Percent, s.Requests, s.Total, s.Errors)
 }
 
 func (m *Module) logFindingSummary() {

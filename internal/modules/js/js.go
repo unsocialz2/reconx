@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -21,10 +23,11 @@ import (
 )
 
 type Module struct {
-	cfg    *config.Config
-	store  *store.Store
-	log    *logger.Logger
-	outDir string
+	cfg      *config.Config
+	store    *store.Store
+	log      *logger.Logger
+	outDir   string
+	activeJS []string
 }
 
 func New(cfg *config.Config, st *store.Store, log *logger.Logger, outDir string) *Module {
@@ -45,19 +48,18 @@ func (m *Module) Run(ctx context.Context) error {
 				liveURLs = append(liveURLs, "https://"+h.Domain)
 			}
 		}
+		sort.Strings(liveURLs)
 		if len(liveURLs) > 0 {
 			if len(liveURLs) > 100 {
+				m.store.AddCoverage("subjs: live host discovery limited to 100 endpoints")
 				liveURLs = liveURLs[:100]
 			}
 			m.runSubjsOnLive(ctx, strings.Join(liveURLs, "\n"))
 		}
 	}
 
-	if m.cfg.ToolAvailable("subjs") {
-		m.runSubjs(ctx, strings.Join(m.store.GetJSFiles(), "\n"))
-	}
 	start := time.Now()
-	jsFiles := scope.New(m.cfg).FilterList(m.store.GetJSFiles())
+	jsFiles := prioritizeJS(scope.New(m.cfg).FilterList(m.store.GetJSFiles()), m.activeJS)
 
 	if len(jsFiles) == 0 {
 		m.log.Warn("No JS files discovered — check that URL discovery ran and found JS files")
@@ -74,6 +76,12 @@ func (m *Module) Run(ctx context.Context) error {
 	// ── Step 1: Download JS files into data/js_downloads/ ───────────────────
 	jsDownloadsDir := filepath.Join(dataDir, "js_downloads")
 	urlMap := m.downloadJSFiles(ctx, jsFiles, jsDownloadsDir)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if len(urlMap) == 0 {
+		return fmt.Errorf("js: no JavaScript files downloaded; secret analysis incomplete")
+	}
 
 	// Build target URL list for mantra and jsecret:
 	// Prioritize the ALIVE/downloaded JS URLs (from urlMap) to avoid hanging on dead 404/403 archives.
@@ -86,9 +94,8 @@ func (m *Module) Run(ctx context.Context) error {
 		}
 	}
 	urlInput := strings.Join(aliveURLs, "\n")
-	if len(aliveURLs) == 0 {
-		urlInput = strings.Join(jsFiles, "\n")
-	}
+	sort.Strings(aliveURLs)
+	urlInput = strings.Join(aliveURLs, "\n")
 
 	var wg sync.WaitGroup
 
@@ -167,15 +174,32 @@ func (m *Module) Run(ctx context.Context) error {
 	return nil
 }
 
-// downloadJSFiles downloads JS files in parallel to destDir, capped at 1000 files.
+// downloadJSFiles downloads JS files in parallel to destDir, capped at 2500 files.
 // Returns a map of filename -> original URL.
 //
 // Timeout matters a lot here: gitleaks/trufflehog/secretfinder can only scan
 // what we download. A 5s per-file timeout got 44/300 files on real targets
 // (large JS bundles + slow CDNs) — 30s gets the vast majority.
 func (m *Module) downloadJSFiles(ctx context.Context, jsFiles []string, destDir string) map[string]string {
-	_ = os.MkdirAll(destDir, 0755)
 	urlMap := make(map[string]string)
+	if err := os.MkdirAll(destDir, 0700); err != nil {
+		m.store.AddCoverage("js: download directory unavailable")
+		return urlMap
+	}
+	// A retry must not feed stale downloads from the previous selection to scanners.
+	entries, err := os.ReadDir(destDir)
+	if err != nil {
+		m.store.AddCoverage("js: download directory unreadable")
+		return urlMap
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() && ((strings.HasPrefix(entry.Name(), "js_") && strings.HasSuffix(entry.Name(), ".js")) || entry.Name() == "url_map.json") {
+			if err := os.Remove(filepath.Join(destDir, entry.Name())); err != nil {
+				m.store.AddCoverage("js: stale download cleanup failed")
+				return urlMap
+			}
+		}
+	}
 	var mu sync.Mutex
 
 	limit := len(jsFiles)
@@ -191,6 +215,8 @@ func (m *Module) downloadJSFiles(ctx context.Context, jsFiles []string, destDir 
 
 	m.log.Info("Downloading %d JS files for deep secret inspection...", limit)
 	downloaded := 0
+	failures := map[string]int{}
+	failed := func(reason string) { mu.Lock(); failures[reason]++; mu.Unlock() }
 
 	for i := 0; i < limit; i++ {
 		u := strings.TrimSpace(jsFiles[i])
@@ -207,6 +233,7 @@ func (m *Module) downloadJSFiles(ctx context.Context, jsFiles []string, destDir 
 			defer wg.Done()
 			select {
 			case <-ctx.Done():
+				failed("cancelled")
 				return
 			case sem <- struct{}{}:
 			}
@@ -214,6 +241,7 @@ func (m *Module) downloadJSFiles(ctx context.Context, jsFiles []string, destDir 
 
 			req, err := http.NewRequestWithContext(ctx, "GET", targetURL, nil)
 			if err != nil {
+				failed("invalid URL")
 				return
 			}
 			req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
@@ -232,36 +260,61 @@ func (m *Module) downloadJSFiles(ctx context.Context, jsFiles []string, destDir 
 
 			resp, err := client.Do(req)
 			if err != nil {
+				failed("request error (network, timeout or scope)")
 				return
 			}
 			defer resp.Body.Close()
 
 			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+				failed(fmt.Sprintf("HTTP %d", resp.StatusCode))
 				return
 			}
 
 			lr := io.LimitReader(resp.Body, 10*1024*1024+1)
 			data, err := io.ReadAll(lr)
 			if len(data) > 10*1024*1024 {
-				m.store.AddCoverage("js: oversized file skipped — " + targetURL)
+				failed("larger than 10 MiB")
 				return
 			}
 			if err != nil || len(data) < 10 {
+				failed("body read error or empty body")
 				return
 			}
 
-			if err := os.WriteFile(outPath, data, 0644); err == nil {
+			prefix := strings.ToLower(strings.TrimSpace(string(data[:min(len(data), 512)])))
+			if strings.HasPrefix(prefix, "<!doctype html") || strings.HasPrefix(prefix, "<html") {
+				failed("HTML response instead of JavaScript")
+				return
+			}
+			if err := os.WriteFile(outPath, data, 0600); err == nil {
 				mu.Lock()
 				urlMap[fName] = targetURL
 				urlMap[filepath.Base(outPath)] = targetURL
 				downloaded++
 				mu.Unlock()
+			} else {
+				failed("file write error")
 			}
 		}(u, filePath, fileName)
 	}
 
 	wg.Wait()
 	m.log.Info("Downloaded %d/%d JS files to %s/ (gitleaks+trufflehog scan these)", downloaded, limit, destDir)
+
+	if len(failures) > 0 {
+		keys := make([]string, 0, len(failures))
+		for reason := range failures {
+			keys = append(keys, reason)
+		}
+		sort.Strings(keys)
+		var parts []string
+		for _, reason := range keys {
+			parts = append(parts, fmt.Sprintf("%s=%d", reason, failures[reason]))
+		}
+		summary := fmt.Sprintf("js: downloaded %d/%d; %s", downloaded, limit, strings.Join(parts, "; "))
+		m.log.Warn("%s", summary)
+		m.store.AddCoverage(summary)
+	}
 
 	if mapData, err := json.MarshalIndent(urlMap, "", "  "); err == nil {
 		_ = os.WriteFile(filepath.Join(destDir, "url_map.json"), mapData, 0644)
@@ -334,7 +387,7 @@ func (m *Module) runSecretFinder(ctx context.Context, jsDir string, urlMap map[s
 							})
 							secretCount++
 							m.log.Secret(secType, "secretfinder", util.Truncate(secVal, 60))
-							m.log.Finding("high", "Secret ("+secType+")", targetURL)
+							m.log.Info("Candidate secret (%s), needs review: %s", secType, targetURL)
 							mu.Unlock()
 						}
 					}
@@ -393,8 +446,11 @@ func (m *Module) runSubjsOnLive(ctx context.Context, input string) {
 	for _, line := range r.Lines {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "http") && strings.Contains(strings.ToLower(line), ".js") {
-			if scope.New(m.cfg).IsInScope(line) && m.store.AddJSFile(line) {
-				newJS++
+			if scope.New(m.cfg).IsInScope(line) {
+				m.activeJS = append(m.activeJS, line)
+				if m.store.AddJSFile(line) {
+					newJS++
+				}
 			}
 		}
 	}
@@ -591,35 +647,11 @@ func (m *Module) runTrufflehog(ctx context.Context, jsDir string, urlMap map[str
 			if !strings.HasPrefix(strings.TrimSpace(line), "{") {
 				return
 			}
-			t := util.JsonStr(line, "DetectorName")
-			if t == "" {
-				t = util.JsonStr(line, "detector_name")
+			sec := parseTrufflehogCandidate(line, urlMap)
+			if sec != nil && m.store.AddSecret(sec) {
+				secretCount++
+				m.log.Secret(sec.Type, "trufflehog (candidate)", "")
 			}
-			if t == "" {
-				t = "unknown"
-			}
-			raw := util.JsonStr(line, "Raw")
-			if raw == "" {
-				raw = util.Truncate(line, 200)
-			}
-			sourceFile := util.JsonStr(line, "SourceName")
-			if sourceFile == "" {
-				sourceFile = util.JsonStr(line, "File")
-			}
-			origURL := filepath.Base(sourceFile)
-			if u, ok := urlMap[origURL]; ok {
-				origURL = u
-			}
-
-			m.store.AddSecret(&store.Secret{
-				Type:   t + " (candidate)",
-				Value:  raw,
-				Source: "trufflehog",
-				File:   origURL,
-			})
-			secretCount++
-			m.log.Secret(t, "trufflehog (candidate)", util.Truncate(raw, 60))
-			m.log.Finding("info", "Candidate Secret: "+t, origURL)
 		}))
 
 	if r.IsTimeout() {
@@ -680,6 +712,10 @@ func (m *Module) runTrufflehogGitHub(ctx context.Context) {
 func (m *Module) runGitleaks(ctx context.Context, jsDir string, urlMap map[string]string) {
 	start := time.Now()
 	reportFile := filepath.Join(store.DataDir(m.outDir), "gitleaks_report.json")
+	if err := os.Remove(reportFile); err != nil && !os.IsNotExist(err) {
+		m.log.ToolError("gitleaks", err, nil)
+		return
+	}
 	args := []string{"detect", "--no-git", "--source", jsDir, "--report-format", "json", "--report-path", reportFile}
 	m.log.Tool("gitleaks", "scanning downloaded JS files")
 	m.log.ToolCmd("gitleaks", args, "")
@@ -714,22 +750,23 @@ func (m *Module) runGitleaks(ctx context.Context, jsDir string, urlMap map[strin
 				if u, ok := urlMap[origFile]; ok {
 					origFile = u
 				}
-				m.store.AddSecret(&store.Secret{
-					Type:   secType,
+				if m.store.AddSecret(&store.Secret{
+					Type:   secType + " (candidate)",
 					Value:  cleanSecret,
 					Source: "gitleaks",
 					File:   origFile,
-				})
-				secretCount++
-				m.log.Secret(secType, "gitleaks", util.Truncate(cleanSecret, 60))
-				m.log.Finding("high", "Secret ("+secType+")", origFile)
+				}) {
+					secretCount++
+					m.log.Secret(secType, "gitleaks", util.Truncate(cleanSecret, 60))
+					m.log.Info("Candidate secret (%s), needs review: %s", secType, origFile)
+				}
 			}
 		}
 	}
 
 	if r.IsTimeout() {
 		m.log.ToolTimeout("gitleaks", secretCount, 10*time.Minute)
-	} else if r.Err != nil && secretCount == 0 && !util.FileExists(reportFile) {
+	} else if r.Err != nil && r.ExitCode != 1 {
 		m.log.ToolError("gitleaks", fmt.Errorf("%s", r.DiagString()), r.Stderr)
 	} else {
 		m.log.ToolDone("gitleaks", secretCount, time.Since(start))
@@ -930,4 +967,59 @@ func isDummyRepeatedSecret(s string) bool {
 		return true
 	}
 	return false
+}
+
+// prioritizeJS keeps active discoveries first, strips fragments and deduplicates
+// before applying the download cap. Query strings are preserved for signed URLs.
+func prioritizeJS(all, active []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(all))
+	appendSorted := func(items []string) {
+		items = append([]string(nil), items...)
+		sort.Strings(items)
+		for _, raw := range items {
+			u, err := url.Parse(strings.TrimSpace(raw))
+			if err != nil {
+				continue
+			}
+			u.Fragment = ""
+			normalized := u.String()
+			if normalized != "" && !seen[normalized] {
+				seen[normalized] = true
+				out = append(out, normalized)
+			}
+		}
+	}
+	appendSorted(active)
+	appendSorted(all)
+	return out
+}
+
+func parseTrufflehogCandidate(line string, urlMap map[string]string) *store.Secret {
+	var item struct {
+		DetectorName   string
+		Raw            string
+		File           string
+		SourceMetadata struct {
+			Data struct {
+				Filesystem struct {
+					File string `json:"file"`
+				}
+			}
+		}
+	}
+	if json.Unmarshal([]byte(line), &item) != nil || strings.TrimSpace(item.Raw) == "" {
+		return nil
+	}
+	sourceFile := item.SourceMetadata.Data.Filesystem.File
+	if sourceFile == "" {
+		sourceFile = item.File
+	}
+	if u, ok := urlMap[filepath.Base(sourceFile)]; ok {
+		sourceFile = u
+	}
+	if item.DetectorName == "" {
+		item.DetectorName = "unknown"
+	}
+	return &store.Secret{Type: item.DetectorName + " (candidate)", Value: item.Raw, Source: "trufflehog", File: sourceFile}
 }

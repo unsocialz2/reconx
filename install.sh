@@ -174,6 +174,16 @@ if (( ! SKIP_TOOLS )); then
   for tool in subfinder httpx nuclei naabu katana dnsx; do "$TOOLS_DIR/$tool" -h > "$WORK_DIR/$tool-help.txt" 2>&1; done
   "$TOOLS_DIR/gitleaks" --help > "$WORK_DIR/gitleaks-help.txt" 2>&1
   "$TOOLS_DIR/gau" --help > "$WORK_DIR/gau-help.txt" 2>&1
+  step 'DNS brute-force wordlist'
+  # Immutable SecLists revision + SHA-256; never overwrite a custom wordlist.
+  mkdir -p "$STATE_DIR/wordlists"
+  dns_wordlist="$STATE_DIR/wordlists/subdomains.txt"
+  if [[ ! -s "$dns_wordlist" ]]; then
+    fetch 'https://raw.githubusercontent.com/danielmiessler/SecLists/d85fec3ba57153e52ac71f32cbf86e6fbb5e1585/Discovery/DNS/subdomains-top1million-5000.txt' "$WORK_DIR/subdomains.txt"
+    verify_sha "$WORK_DIR/subdomains.txt" 'e331367c140298cb179114fdeefa78f58f696219f0dec017a28bb79487cfcf19'
+    cp "$WORK_DIR/subdomains.txt" "$dns_wordlist"
+  fi
+  printf 'DNS wordlist: %s (dnsx uses the system resolver unless --resolvers is supplied).\n' "$dns_wordlist"
   step 'Nuclei templates (download only)'
   "$TOOLS_DIR/nuclei" -update-templates
   printf 'Core tools (including Gitleaks) and help checks passed. Screenshots and additional scanners are optional.\n'

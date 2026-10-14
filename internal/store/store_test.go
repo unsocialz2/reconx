@@ -181,3 +181,20 @@ func TestAddSecret_DedupAndStripANSI(t *testing.T) {
 		t.Errorf("expected ANSI stripped value, got %q", s.Secrets[0].Value)
 	}
 }
+
+func TestWAFUnknownDoesNotInheritParentOrOtherEndpoint(t *testing.T) {
+	s := New("test")
+	s.AddWAFResult(&WAFResult{Host: "https://example.test", WAF: "fixture", Detected: true})
+	s.AddWAFResult(&WAFResult{Host: "https://plain.example.test", Detected: false})
+	for _, u := range []string{"https://sub.example.test", "http://example.test", "https://example.test:8443"} {
+		if detected, known := s.WAFStatus(u); detected || known {
+			t.Fatalf("%s incorrectly inherits WAF status", u)
+		}
+	}
+	if detected, known := s.WAFStatus("https://example.test/path"); !detected || !known {
+		t.Fatal("positive result lost")
+	}
+	if detected, known := s.WAFStatus("https://plain.example.test"); detected || !known {
+		t.Fatal("negative result lost")
+	}
+}

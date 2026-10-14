@@ -2,6 +2,7 @@ package alive
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"github.com/unsocialz2/reconx/internal/scope"
 	"io"
@@ -464,7 +465,7 @@ func (m *Module) runWAFDetection(ctx context.Context) {
 		return
 	}
 
-	outFile := store.DataDir(m.outDir) + "/wafw00f.txt"
+	outFile := store.DataDir(m.outDir) + "/wafw00f.json"
 	args := []string{"-i", aliveFile, "-o", outFile, "-a"}
 	timeout := time.Duration(tcfg.Timeout) * time.Second
 	if timeout == 0 {
@@ -478,54 +479,24 @@ func (m *Module) runWAFDetection(ctx context.Context) {
 	r := runner.Run(ctx, path, args, runner.WithTimeout(timeout))
 
 	wafCount := 0
-	seenWAF := make(map[string]bool)
-	for _, line := range r.Lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		// wafw00f output: "The site http://... is behind <WAF> WAF."
-		// or:             "No WAF detected"
-		lower := strings.ToLower(line)
-		detected := !strings.Contains(lower, "no waf") &&
-			!strings.Contains(lower, "generic") &&
-			strings.Contains(lower, "behind")
-
-		if detected {
-			// Extract host and WAF name
-			host := ""
-			waf := "unknown"
-			if idx := strings.Index(line, "http"); idx >= 0 {
-				rest := line[idx:]
-				if end := strings.IndexAny(rest, " )"); end > 0 {
-					host = rest[:end]
-				}
-			}
-			if idx := strings.Index(lower, "behind "); idx >= 0 {
-				rest := strings.TrimSpace(line[idx+7:])
-				if strings.HasPrefix(strings.ToLower(rest), "a ") {
-					rest = strings.TrimSpace(rest[2:])
-				} else if strings.HasPrefix(strings.ToLower(rest), "an ") {
-					rest = strings.TrimSpace(rest[3:])
-				}
-				if end := strings.IndexAny(rest, " .("); end > 0 {
-					waf = rest[:end]
-				} else {
-					waf = rest
-				}
-			}
-			host = strings.TrimSpace(stripAnsi(host))
-			waf = strings.TrimSpace(stripAnsi(waf))
-			if host != "" && waf != "" && waf != "a" && waf != "an" {
-				key := host + ":" + waf
-				if !seenWAF[key] {
-					seenWAF[key] = true
-					wafCount++
-					m.store.AddWAFResult(&store.WAFResult{Host: host, WAF: waf, Detected: true})
-					m.log.Warn("WAF detected: %s — %s", host, waf)
+	if data, err := os.ReadFile(outFile); err == nil {
+		results, err := parseWAFJSON(data)
+		if err != nil {
+			m.store.AddCoverage("wafw00f: invalid JSON results; some WAF statuses unknown")
+			m.log.Warn("wafw00f output: %v", err)
+		} else {
+			for _, result := range results {
+				if scope.New(m.cfg).IsInScope(result.Host) {
+					m.store.AddWAFResult(result)
+					if result.Detected {
+						wafCount++
+						m.log.Warn("WAF detected: %s — %s", result.Host, result.WAF)
+					}
 				}
 			}
 		}
+	} else {
+		m.store.AddCoverage("wafw00f: result file unavailable; WAF statuses unknown")
 	}
 
 	if r.Err != nil && wafCount == 0 {
@@ -678,4 +649,29 @@ func (m *Module) runSubjack(ctx context.Context) {
 			m.log.Warn("🚨 subjack found %d POTENTIAL SUBDOMAIN TAKEOVERS!", takeoverCount)
 		}
 	}
+}
+
+// parseWAFJSON preserves both positive and explicit negative detections.
+func parseWAFJSON(data []byte) ([]*store.WAFResult, error) {
+	var records []struct {
+		URL      string `json:"url"`
+		Firewall string `json:"firewall"`
+		Detected *bool  `json:"detected"`
+	}
+	if err := json.Unmarshal(data, &records); err != nil {
+		return nil, err
+	}
+	var out []*store.WAFResult
+	seen := map[string]bool{}
+	for _, record := range records {
+		if record.URL == "" || record.Detected == nil {
+			continue
+		}
+		key := record.URL + ":" + record.Firewall
+		if !seen[key] {
+			seen[key] = true
+			out = append(out, &store.WAFResult{Host: record.URL, WAF: record.Firewall, Detected: *record.Detected})
+		}
+	}
+	return out, nil
 }

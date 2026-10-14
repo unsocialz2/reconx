@@ -2,13 +2,14 @@ package runner
 
 import (
 	"bufio"
-	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -25,6 +26,8 @@ type Result struct {
 	ExitCode int
 	Err      error
 }
+
+var ErrOutputLimit = errors.New("stdout capture limit reached; results are partial")
 
 // HasResults returns true if any stdout lines were captured
 func (r *Result) HasResults() bool { return len(r.Lines) > 0 }
@@ -45,6 +48,8 @@ func (r *Result) DiagString() string {
 		return ""
 	}
 	switch {
+	case errors.Is(r.Err, context.Canceled):
+		return fmt.Sprintf("%s: cancelled; results are partial", r.Tool)
 	case r.IsNotFound():
 		return fmt.Sprintf("%s: binary not found in PATH — install it or check 'which %s'", r.Tool, r.Tool)
 	case r.IsTimeout():
@@ -91,6 +96,27 @@ type runConfig struct {
 	env           []string
 	captureStderr bool
 	filterStderr  bool // if true, don't add stderr to Lines
+	uniqueLines   bool
+	maxLines      int
+	maxBytes      int
+	noCapture     bool
+}
+
+// WithUniqueLines deduplicates captured stdout while still delivering every
+// line to callbacks. Useful for crawlers that repeatedly emit the same URLs.
+func WithUniqueLines() Option {
+	return func(c *runConfig) { c.uniqueLines = true }
+}
+
+// WithOutputLimit bounds retained stdout. Callbacks continue receiving output;
+// hitting the limit marks the result incomplete instead of silently dropping it.
+func WithOutputLimit(lines, bytes int) Option {
+	return func(c *runConfig) { c.maxLines, c.maxBytes = lines, bytes }
+}
+
+// WithoutCapture streams stdout exclusively to a callback (e.g. JSONL files).
+func WithoutCapture() Option {
+	return func(c *runConfig) { c.noCapture = true }
 }
 
 // WithTimeout sets execution timeout
@@ -187,6 +213,8 @@ func Run(ctx context.Context, name string, args []string, opts ...Option) (resul
 		timeout:       0, // 0 = no timeout, use parent ctx only
 		captureStderr: true,
 		filterStderr:  true,
+		maxLines:      200000,
+		maxBytes:      64 * 1024 * 1024,
 	}
 	for _, o := range opts {
 		o(cfg)
@@ -212,6 +240,9 @@ func Run(ctx context.Context, name string, args []string, opts ...Option) (resul
 	defer cancel()
 
 	binPath := ResolveBinaryPath(name)
+	if fn, ok := ctx.Value(commandObserverKey{}).(func(string, []string)); ok {
+		fn(binPath, append([]string(nil), args...))
+	}
 	cmd := exec.CommandContext(runCtx, binPath, args...)
 
 	// Set process group ID so we can kill the entire process tree on timeout/cancel
@@ -262,12 +293,14 @@ func Run(ctx context.Context, name string, args []string, opts ...Option) (resul
 		mu            sync.Mutex
 		stdoutLines   []string
 		stderrLines   []string
-		stderrBuf     bytes.Buffer
 		scannerErrors []error
+		capturedBytes int
+		outputLimited bool
 	)
 
 	// Collect stdout
 	collectStdout := func() {
+		seen := make(map[string]struct{})
 		sc := bufio.NewScanner(stdoutPipe)
 		sc.Buffer(make([]byte, 4*1024*1024), 4*1024*1024)
 		for sc.Scan() {
@@ -276,7 +309,18 @@ func Run(ctx context.Context, name string, args []string, opts ...Option) (resul
 				continue
 			}
 			mu.Lock()
-			stdoutLines = append(stdoutLines, line)
+			_, duplicate := seen[line]
+			if !cfg.noCapture && (!cfg.uniqueLines || !duplicate) {
+				if (cfg.maxLines > 0 && len(stdoutLines) >= cfg.maxLines) || (cfg.maxBytes > 0 && capturedBytes+len(line) > cfg.maxBytes) {
+					outputLimited = true
+				} else {
+					stdoutLines = append(stdoutLines, line)
+					capturedBytes += len(line)
+					if cfg.uniqueLines {
+						seen[line] = struct{}{}
+					}
+				}
+			}
 			mu.Unlock()
 			if cfg.onLine != nil {
 				cfg.onLine(line)
@@ -300,8 +344,11 @@ func Run(ctx context.Context, name string, args []string, opts ...Option) (resul
 				continue
 			}
 			mu.Lock()
+			// Keep recent diagnostics; callbacks still receive the full stream.
 			stderrLines = append(stderrLines, line)
-			stderrBuf.WriteString(line + "\n")
+			if len(stderrLines) > 100 {
+				stderrLines = stderrLines[1:]
+			}
 			mu.Unlock()
 			if cfg.onStderrLine != nil {
 				cfg.onStderrLine(line)
@@ -363,7 +410,12 @@ func Run(ctx context.Context, name string, args []string, opts ...Option) (resul
 
 	// Classify timeout
 	if runCtx.Err() == context.DeadlineExceeded {
-		runErr = fmt.Errorf("timeout after %s", effectiveTimeout.Round(time.Second))
+		runErr = fmt.Errorf("timeout after %s: %w", effectiveTimeout.Round(time.Second), context.DeadlineExceeded)
+	} else if runCtx.Err() != nil {
+		runErr = runCtx.Err()
+	}
+	if outputLimited {
+		runErr = errors.Join(runErr, ErrOutputLimit)
 	}
 
 	return &Result{
@@ -439,15 +491,23 @@ func WhichPath(name string) string {
 	return p
 }
 
-// Version runs `name --version` and returns the first line of output
+// Version extracts a version number, skipping ASCII banners and update notices.
 func Version(name string) string {
-	r := Run(context.Background(), name, []string{"--version"},
-		WithTimeout(5*time.Second))
-	if r.HasResults() {
-		return r.Lines[0]
+	flag := "--version"
+	switch filepath.Base(name) {
+	case "httpx", "naabu", "nuclei", "subfinder", "dnsx", "katana":
+		flag = "-version"
 	}
-	if len(r.Stderr) > 0 {
-		return r.Stderr[0]
+	r := Run(context.Background(), name, []string{flag}, WithTimeout(5*time.Second))
+	return versionFromLines(append(r.Lines, r.Stderr...))
+}
+
+func versionFromLines(lines []string) string {
+	pattern := regexp.MustCompile(`(?i)(?:^|\s|:)(v?\d+\.\d+\.\d+(?:[-+][a-z0-9.-]+)?)`)
+	for _, line := range lines {
+		if match := pattern.FindStringSubmatch(line); len(match) > 1 {
+			return match[1]
+		}
 	}
 	return "unknown"
 }

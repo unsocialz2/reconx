@@ -1,6 +1,13 @@
 package vuln
 
 import (
+	"context"
+	"github.com/unsocialz2/reconx/internal/config"
+	"github.com/unsocialz2/reconx/internal/store"
+	"github.com/unsocialz2/reconx/pkg/logger"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -60,5 +67,47 @@ func TestParseNucleiLine(t *testing.T) {
 		if f.Severity != tc.wantSev {
 			t.Errorf("severity: got %q, want %q", f.Severity, tc.wantSev)
 		}
+	}
+}
+
+func TestNucleiStatsStringAndNumericVersions(t *testing.T) {
+	for _, line := range []string{`{"percent":"28","requests":"154719","errors":"92684","total":"546943"}`, `{"percent":28,"requests":154719,"errors":92684,"total":546943}`} {
+		stats := parseNucleiStats(line)
+		if stats == nil || stats.Percent != 28 || stats.Errors != 92684 || stats.Requests != 154719 {
+			t.Fatalf("%+v", stats)
+		}
+	}
+	if parseNucleiStats(`{"percent":"unknown","requests":5}`) != nil {
+		t.Fatal("malformed stats accepted")
+	}
+}
+
+func TestIncompleteStatsMarkScanPartialAndKeepFindings(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "fake-nuclei")
+	script := `#!/bin/sh
+case "$1" in --version|-version) echo 'v3.11.1'; exit 0;; esac
+printf '%s\n' '{"percent":"28","requests":"100","errors":"60","total":"350"}' >&2
+printf '%s\n' '{"template-id":"fixture","info":{"name":"Fixture","severity":"medium"},"matched-at":"https://example.test"}'
+`
+	if err := os.WriteFile(bin, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.DefaultConfig()
+	cfg.Tools["nuclei"] = config.ToolConfig{Enabled: true, Path: bin, Timeout: 1}
+	st := store.New("test")
+	st.AddHost(&store.Host{Domain: "example.test", Meta: map[string]string{"url": "https://example.test"}})
+	l := logger.New(false, "")
+	defer l.Close()
+	err := New(cfg, st, l, dir).Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "coverage incomplete") || len(st.Findings) == 0 {
+		t.Fatalf("err=%v findings=%v", err, st.Findings)
+	}
+	if !strings.Contains(strings.Join(st.Snapshot().Coverage, ";"), "errors=60") {
+		t.Fatal(st.Snapshot().Coverage)
+	}
+	data, readErr := os.ReadFile(filepath.Join(dir, "data", "nuclei_unknown_takeovers.jsonl"))
+	if readErr != nil || !strings.Contains(string(data), "fixture") {
+		t.Fatalf("%s %v", data, readErr)
 	}
 }

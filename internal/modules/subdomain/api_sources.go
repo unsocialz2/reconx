@@ -92,7 +92,7 @@ func apiFetch(ctx context.Context, apiURL, name string, log *logger.Logger,
 			resp.Body.Close()
 			cancel()
 			// Terminal statuses — no point retrying
-			if status == 200 || status == 404 || status == 401 || status == 403 {
+			if status == 200 || status == 404 || status == 401 || status == 403 || status == 429 {
 				return body, status, nil
 			}
 			err = fmt.Errorf("HTTP %d", status)
@@ -139,7 +139,7 @@ func apiFetchPost(ctx context.Context, apiURL, jsonBody, name string, log *logge
 			status = resp.StatusCode
 			resp.Body.Close()
 			cancel()
-			if status == 200 || status == 404 || status == 401 || status == 403 {
+			if status == 200 || status == 404 || status == 401 || status == 403 || status == 429 {
 				return body, status, nil
 			}
 			err = fmt.Errorf("HTTP %d", status)
@@ -574,7 +574,7 @@ func (m *Module) runVirusTotal(ctx context.Context, domain string, board *logger
 			board.Skip("virustotal", "timeout/network")
 			return nil, nil
 		}
-		if status == 401 || status == 403 {
+		if status == 401 || status == 403 || status == 429 {
 			board.Skip("virustotal", "invalid token/quota")
 			return nil, nil
 		}
@@ -627,7 +627,7 @@ func (m *Module) runShodan(ctx context.Context, domain string, board *logger.Pro
 		board.Skip("shodan", "timeout/network")
 		return nil, nil
 	}
-	if status == 401 || status == 403 {
+	if status == 401 || status == 403 || status == 429 {
 		board.Skip("shodan", "invalid token/quota")
 		return nil, nil
 	}
@@ -663,7 +663,7 @@ func (m *Module) runSecurityTrails(ctx context.Context, domain string, board *lo
 		board.Skip("securitytrails", "timeout/network")
 		return nil, nil
 	}
-	if status == 401 || status == 403 {
+	if status == 401 || status == 403 || status == 429 {
 		board.Skip("securitytrails", "invalid token/quota")
 		return nil, nil
 	}
@@ -712,7 +712,7 @@ func (m *Module) runCensys(ctx context.Context, domain string, board *logger.Pro
 		board.Skip("censys", "timeout/network")
 		return nil, nil
 	}
-	if status == 401 || status == 403 {
+	if status == 401 || status == 403 || status == 429 {
 		board.Skip("censys", "invalid token/quota")
 		return nil, nil
 	}

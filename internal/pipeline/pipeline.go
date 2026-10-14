@@ -236,7 +236,10 @@ func (p *Pipeline) Run(ctx context.Context) error {
 		}
 		var failures []string
 		var mu sync.Mutex
-		phaseCtx := runner.WithObserver(ctx, func(r *runner.Result) {
+		phaseCtx := runner.WithCommandObserver(ctx, func(path string, args []string) {
+			p.log.EffectiveToolCmd(path, args)
+		})
+		phaseCtx = runner.WithObserver(phaseCtx, func(r *runner.Result) {
 			if r.Err != nil && !errors.Is(r.Err, runner.ErrDisabled) && !(strings.Contains(r.Tool, "gitleaks") && r.ExitCode == 1) {
 				mu.Lock()
 				failures = append(failures, r.DiagString())
@@ -261,6 +264,7 @@ func (p *Pipeline) Run(ctx context.Context) error {
 			phaseErrors = append(phaseErrors, fmt.Errorf("%s incomplete: %s", name, state.Reason))
 		}
 		if state.Status != "completed" {
+			p.log.Warn("Phase %s: %s — %s", name, state.Status, state.Reason)
 			p.store.AddCoverage(name + ": " + state.Status + " — " + state.Reason)
 		}
 		p.manifest.Phases[name] = state
