@@ -271,6 +271,7 @@
         background: #e4f4ec;
       }
       .partial,
+      .stale,
       .timeout,
       .unknown {
         color: #94620c;
@@ -481,6 +482,7 @@
         color: #82dfbc;
       }
       .dark .partial,
+      .dark .stale,
       .dark .timeout,
       .dark .unknown {
         background: #3c3017;
@@ -1671,12 +1673,57 @@
         waf: "🛡️",
         phases: "🧭",
         sources: "📊",
+        budgets: "⏱️",
+        runs: "♻️",
         comparison: "🔄",
         tasks: "🧩",
         coverage: "⚠️",
         artifacts: "🧾",
       };
       const tables = {
+        budgets: {
+          title: "Source budgets",
+          note: "Latest recorded plans. Estimates are heuristics. Explicit total_timeout wins; adaptive caps preserve partial results. Successful cached batches are replayed, even after an execution budget expires.",
+          rows: phaseRows.flatMap((p) =>
+            arr(p.budgets).map((b) => ({ phase: p.name, ...b })),
+          ),
+          cols: [
+            ["Phase", "phase"],
+            ["Source", "tool"],
+            ["Inputs", "inputs"],
+            ["Workers", "workers"],
+            ["Budget (s)", "seconds"],
+            [
+              "Estimate (s)",
+              (r) => (r.mode === "adaptive" ? r.estimated_seconds : "—"),
+            ],
+            ["Mode", "mode"],
+            ["Capped", (r) => (r.capped ? "yes" : "no")],
+            ["Reason", "reason"],
+          ],
+          filter: "mode",
+          detail: "record",
+        },
+        runs: {
+          title: "Resume & retry history",
+          note: "Runs preserve prior observations. Job counters cover resumable batch/WAF/Amass work; command attempts include other subprocesses. A successful selected retry does not prove whole-scan coverage. Downstream phases can be stale after upstream work changes.",
+          rows: arr(SCAN_DATA.runs),
+          cols: [
+            ["Started", "started_at"],
+            ["Mode", "mode"],
+            ["State", "status"],
+            ["Phases", (r) => arr(r.phases).join(", ") || "normal pipeline"],
+            ["Sources", (r) => arr(r.sources).join(", ") || "phase sources"],
+            ["Commands", (r) => r.tasks?.command_attempts || 0],
+            ["Reused jobs", (r) => r.tasks?.reused || 0],
+            ["Executed jobs", (r) => r.tasks?.executed || 0],
+            ["Failed jobs", (r) => r.tasks?.failed || 0],
+            ["Pending jobs", (r) => r.tasks?.pending || 0],
+            ["Finished", "finished_at"],
+          ],
+          filter: "mode",
+          detail: "record",
+        },
         comparison: {
           title: "Scan comparison",
           note:
@@ -1904,6 +1951,9 @@
             ["State", "status"],
             ["Started", "started_at"],
             ["Finished", "finished_at"],
+            ["Attempts", "attempts"],
+            ["Reused jobs", (r) => r.tasks?.reused || 0],
+            ["Pending jobs", (r) => r.tasks?.pending || 0],
             ["Reason", "reason"],
           ],
           filter: "status",
@@ -1924,8 +1974,8 @@
           detail: "record",
         },
         tasks: {
-          title: "Completed batch journal",
-          note: "Successful HTTP and crawl batches retained for resume. Failed batches remain retryable and are listed in coverage notes.",
+          title: "Stored task journals",
+          note: "Historical successful job journals. Older copies can remain after refresh; retry history shows current reuse, failed and pending work.",
           rows: arr(SCAN_DATA.tasks),
           cols: [
             ["Tool", "tool"],
@@ -1966,6 +2016,8 @@
         ["waf", "WAF"],
         ["phases", "Phase coverage"],
         ["sources", "Source coverage"],
+        ["budgets", "Source budgets"],
+        ["runs", "Retry history"],
         ["comparison", "Scan comparison"],
         ["tasks", "Batch journal"],
         ["coverage", "Coverage notes"],
@@ -2533,6 +2585,7 @@
           "timeout",
           "cancelled",
           "interrupted",
+          "stale",
         ].includes(p.status),
       );
       const banner = node("div", undefined, "banner");
@@ -2817,8 +2870,8 @@
       overview.append(grid);
       const cov = heading(
         "coverage",
-        "Coverage & limitations",
-        "Recorded limits are preserved. Budget stops retain partial evidence and remain retryable.",
+        "Coverage history & limitations",
+        "Historical coverage notes are retained, including resolved failures. Current phase/source states and retry history show what still needs attention.",
       );
       arr(D.coverage).forEach((note) =>
         cov.append(node("div", note, "coverage-item")),

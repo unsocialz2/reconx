@@ -82,6 +82,9 @@ func (m *Module) Run(ctx context.Context) error {
 	// false positives (every word resolves). We detect this early and warn
 	// so the user can decide whether to continue or add --skip-bruteforce.
 	for _, domain := range m.cfg.Target.Domains {
+		if len(m.cfg.RetrySources) > 0 {
+			continue
+		}
 		m.runWildcardCheck(ctx, domain, board.ForTarget(domain))
 	}
 
@@ -95,7 +98,7 @@ func (m *Module) Run(ctx context.Context) error {
 		}()
 	}
 
-	if len(m.cfg.Target.IPRanges) > 0 && m.cfg.ToolAvailable("dnsx") {
+	if len(m.cfg.RetrySources) == 0 && len(m.cfg.Target.IPRanges) > 0 && m.cfg.ToolAvailable("dnsx") {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -104,6 +107,9 @@ func (m *Module) Run(ctx context.Context) error {
 	}
 
 	for _, asn := range m.cfg.Target.ASNs {
+		if len(m.cfg.RetrySources) > 0 {
+			continue
+		}
 		asn := asn
 		wg.Add(1)
 		go func() {
@@ -116,12 +122,12 @@ func (m *Module) Run(ctx context.Context) error {
 
 	total := len(m.store.GetSubdomains())
 	m.log.PhaseComplete("Subdomain Enumeration", total, time.Since(start))
-	m.printSourceSummary(board)
+	summaryStats := m.printSourceSummary(board)
 	board.Stop()
 	// ── massdns resolve (optional, runs if massdns binary is available) ────────
 	// Much faster than puredns/dnsx for very large subdomain sets (10k+).
 	// Results are merged back into store so later phases see everything.
-	if total > 5000 && m.cfg.ToolAvailable("massdns") {
+	if len(m.cfg.RetrySources) == 0 && total > 5000 && m.cfg.ToolAvailable("massdns") {
 		m.runMassdns(ctx, m.store.GetSubdomains())
 	}
 
@@ -134,8 +140,8 @@ func (m *Module) Run(ctx context.Context) error {
 	if err := store.SaveRaw(m.outDir+"/subdomains.txt", subs); err != nil {
 		m.log.Warn("Failed to save subdomains.txt: %v", err)
 	}
-	for _, status := range board.SourceStats() {
-		if !strings.HasSuffix(status.Name, " / wildcard-check") && (status.State == "error" || status.State == "timeout") {
+	for _, status := range summaryStats {
+		if !strings.HasSuffix(status.Name, " / wildcard-check") && (status.State == "error" || status.State == "timeout" || status.State == "partial") {
 			return fmt.Errorf("source %s incomplete: %s", status.Name, status.Message)
 		}
 	}
@@ -145,8 +151,14 @@ func (m *Module) Run(ctx context.Context) error {
 // printSourceSummary prints a per-source yield table after enumeration so
 // weak/failed sources are visible without grepping the debug log. This is
 // the "why did I get fewer domains than subfinder alone?" answer at a glance.
-func (m *Module) printSourceSummary(board *logger.ProgressBoard) {
+func (m *Module) printSourceSummary(board *logger.ProgressBoard) []logger.ToolStatus {
 	stats := board.SourceStats()
+	if len(m.cfg.RetrySources) > 0 {
+		var previous []logger.ToolStatus
+		if raw, err := os.ReadFile(filepath.Join(store.DataDir(m.outDir), "subdomain_source_summary.json")); err == nil && json.Unmarshal(raw, &previous) == nil {
+			stats = logger.MergeSourceStats(previous, stats, m.cfg.RetrySources)
+		}
+	}
 	if raw, err := json.Marshal(stats); err == nil {
 		_ = store.AtomicWrite(filepath.Join(store.DataDir(m.outDir), "subdomain_source_summary.json"), raw, 0600)
 	}
@@ -156,7 +168,7 @@ func (m *Module) printSourceSummary(board *logger.ProgressBoard) {
 		}
 	}
 	if len(stats) == 0 {
-		return
+		return nil
 	}
 	m.log.Separator()
 	m.log.Info("Per-source yield by target (in-scope results):")
@@ -177,6 +189,7 @@ func (m *Module) printSourceSummary(board *logger.ProgressBoard) {
 		}
 	}
 	m.log.Separator()
+	return stats
 }
 
 func timeoutSuffix(state string) string {
@@ -242,6 +255,10 @@ func (m *Module) enumerateDomain(ctx context.Context, domain string, board *logg
 		var wg sync.WaitGroup
 		for _, t := range defs {
 			t := t
+			if !m.cfg.SelectsSource(t.name) {
+				board.Skip(t.name, "not selected for retry")
+				continue
+			}
 
 			if t.active && !hasWordlist {
 				board.Skip(t.name, "no wordlist; rerun install.sh or set --wordlist")
@@ -405,9 +422,16 @@ func (m *Module) runAmass(ctx context.Context, domain string, board *logger.Prog
 		Lines    []string
 		Duration time.Duration
 	}
-	if raw, err := os.ReadFile(completed); err == nil && json.Unmarshal(raw, &cached) == nil {
+	if raw, err := os.ReadFile(completed); err == nil && !runner.IsRefresh(ctx) && json.Unmarshal(raw, &cached) == nil {
+		runner.RecordTask(ctx, "amass", "reused", 1)
 		board.Done("amass", len(cached.Lines))
 		return cached.Lines, nil
+	}
+	if runner.IsRefresh(ctx) {
+		if err := os.Remove(completed); err != nil && !os.IsNotExist(err) {
+			board.Fail("amass", err.Error())
+			return nil, []string{err.Error()}
+		}
 	}
 	tcfg := m.cfg.Tools["amass"]
 	path := "amass"
@@ -437,17 +461,19 @@ func (m *Module) runAmass(ctx context.Context, domain string, board *logger.Prog
 		args = append(args, "-timeout", fmt.Sprintf("%d", amassMin))
 	}
 
-	budget := 30 * time.Minute
-	if tcfg.TotalTimeout > 0 {
-		budget = time.Duration(tcfg.TotalTimeout) * time.Second
-	}
-	taskCtx, stop := context.WithTimeout(ctx, budget)
+	budget := m.cfg.SourceBudget("amass", 1, 30*time.Minute)
+	taskCtx, stop := context.WithTimeoutCause(ctx, budget, runner.ErrSourceBudget)
 	defer stop()
 	board.Heartbeat("amass")
 	r := runner.Run(taskCtx, path, args,
 		runner.WithTimeout(timeout),
 		runner.WithStderrCallback(func(line string) { board.Heartbeat("amass") }))
 
+	state := "completed"
+	if r.Err != nil {
+		state = "partial"
+	}
+	runner.RecordTask(ctx, "amass", state, 1)
 	var lines []string
 	if data, err := os.ReadFile(outFile); err == nil {
 		for _, l := range strings.Split(string(data), "\n") {
@@ -472,8 +498,12 @@ func (m *Module) runAmass(ctx context.Context, domain string, board *logger.Prog
 
 	if r.IsTimeout() {
 		board.Timeout("amass", len(results))
-	} else if r.Err != nil && len(results) == 0 {
-		board.Fail("amass", r.DiagString())
+	} else if r.Err != nil {
+		if len(results) == 0 {
+			board.Fail("amass", r.DiagString())
+		} else {
+			board.Partial("amass", r.DiagString())
+		}
 	} else {
 		board.Done("amass", len(results))
 	}

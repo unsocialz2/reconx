@@ -132,9 +132,14 @@ func New(cfg *config.Config) (*Pipeline, error) {
 		if err := cfg.Validate(); err != nil {
 			return nil, err
 		}
-		if manifest.Fingerprint != fingerprint(cfg) {
-			return nil, fmt.Errorf("resume target/scope/tool configuration changed; start a new scan")
+		if manifest.WorkFingerprint != "" {
+			if manifest.WorkFingerprint != workFingerprint(cfg) {
+				return nil, fmt.Errorf("resume target/scope/tool arguments changed; start a new scan")
+			}
+		} else if manifest.Fingerprint != fingerprint(cfg) {
+			return nil, fmt.Errorf("legacy resume fingerprint changed; use original configuration once to migrate before adjusting budgets")
 		}
+		manifest.WorkFingerprint = workFingerprint(cfg)
 	} else {
 		if err := os.MkdirAll(cfg.Output.OutputDir, 0700); err != nil {
 			return nil, err
@@ -151,6 +156,7 @@ func New(cfg *config.Config) (*Pipeline, error) {
 		manifest.Target = cfg.Target
 		manifest.Scope = cfg.Scope
 		manifest.Fingerprint = fingerprint(cfg)
+		manifest.WorkFingerprint = workFingerprint(cfg)
 	}
 	log := logger.New(cfg.Output.Verbose, filepath.Join(outDir, "reconx.log"))
 	if err := scope.New(cfg).ValidateDiscoverySeeds(); err != nil {
@@ -158,6 +164,10 @@ func New(cfg *config.Config) (*Pipeline, error) {
 		return nil, err
 	}
 	p := &Pipeline{cfg: cfg, store: store.New(filepath.Base(outDir)), scope: scope.New(cfg), log: log, outDir: outDir, manifest: manifest}
+	if err := p.validateSelection(); err != nil {
+		log.Close()
+		return nil, err
+	}
 	if cfg.ResumeDir != "" {
 		st, err := store.LoadSnapshot(filepath.Join(outDir, "checkpoint.json"), p.scope.IsInScope)
 		if err != nil {
@@ -222,6 +232,22 @@ func (p *Pipeline) Run(ctx context.Context) error {
 	policy.ProxyURL = proxyURL
 	ctx = runner.WithPolicy(ctx, policy)
 	ctx = runner.WithTaskDirectory(ctx, filepath.Join(p.outDir, "tasks"))
+	ctx = runner.WithRefresh(ctx, p.cfg.Refresh)
+	mode := "new"
+	if p.cfg.ResumeDir != "" {
+		mode = "resume"
+	}
+	if len(p.cfg.RetryPhases) > 0 {
+		mode = "retry-phase"
+	}
+	if len(p.cfg.RetrySources) > 0 {
+		mode = "retry-source"
+	}
+	if p.cfg.Refresh {
+		mode = "refresh"
+	}
+	p.manifest.Runs = append(p.manifest.Runs, RunRecord{StartedAt: time.Now(), Mode: mode, Phases: p.cfg.RetryPhases, Sources: p.cfg.RetrySources})
+	currentRun := &p.manifest.Runs[len(p.manifest.Runs)-1]
 	p.log.Banner("v1.2.0")
 	p.log.Info("Scan ID: %s", p.store.ScanID)
 	p.log.Info("Output: %s", p.outDir)
@@ -256,12 +282,19 @@ func (p *Pipeline) Run(ctx context.Context) error {
 	}
 	var phaseErrors []error
 	run := func(name string, enabled bool, fn func(context.Context) error) {
+		if !p.cfg.SelectsPhase(name) {
+			return
+		}
+		prior, recorded := p.manifest.Phases[name]
+		if !enabled && p.cfg.ResumeDir != "" && recorded {
+			return
+		}
 		if !enabled {
 			p.manifest.Phases[name] = PhaseState{Status: "skipped", Reason: "disabled by configuration"}
 			emit("phase.finished", name, "", "skipped")
 			return
 		}
-		if prior := p.manifest.Phases[name]; p.cfg.ResumeDir != "" && prior.Status == "completed" {
+		if p.cfg.ResumeDir != "" && !p.cfg.HasRetry() && prior.Status == "completed" {
 			p.log.Info("Resume: %s completed; skipping", name)
 			return
 		}
@@ -269,7 +302,10 @@ func (p *Pipeline) Run(ctx context.Context) error {
 			p.manifest.Phases[name] = PhaseState{Status: "skipped", Reason: "scan canceled"}
 			return
 		}
-		state := PhaseState{Status: "running", StartedAt: time.Now()}
+		state := PhaseState{Status: "running", StartedAt: time.Now(), Attempts: prior.Attempts + 1, Sources: p.cfg.RetrySources}
+		if p.cfg.ResumeDir != "" {
+			p.markDependentsStale(name)
+		}
 		emit("phase.started", name, "", "running")
 		p.manifest.Phases[name] = state
 		if err := p.checkpoint(); err != nil {
@@ -281,7 +317,38 @@ func (p *Pipeline) Run(ctx context.Context) error {
 		phaseCtx := runner.WithCommandObserver(ctx, func(path string, args []string) {
 			p.log.EffectiveToolCmd(path, args)
 		})
+		phaseCtx = runner.WithTaskObserver(phaseCtx, func(e runner.TaskEvent) {
+			mu.Lock()
+			defer mu.Unlock()
+			switch e.State {
+			case "reused":
+				state.Tasks.Reused++
+			case "completed":
+				state.Tasks.Executed++
+			case "partial":
+				state.Tasks.Executed++
+				state.Tasks.Failed++
+			case "pending":
+				state.Tasks.Pending++
+			}
+			emit("task."+e.State, name, e.Tool, e.State)
+		})
+		plans := map[string]bool{}
+		p.cfg.BudgetStatus = func(plan config.BudgetPlan) {
+			mu.Lock()
+			defer mu.Unlock()
+			key := fmt.Sprintf("%s:%d:%d", plan.Tool, plan.Inputs, plan.Seconds)
+			if plans[key] {
+				return
+			}
+			plans[key] = true
+			state.Budgets = append(state.Budgets, plan)
+			p.log.Info("Budget %s: %s | %d inputs | %s | estimate=%ds capped=%t", plan.Tool, (time.Duration(plan.Seconds) * time.Second).String(), plan.Inputs, plan.Mode, plan.EstimatedSeconds, plan.Capped)
+		}
 		phaseCtx = runner.WithObserver(phaseCtx, func(r *runner.Result) {
+			mu.Lock()
+			state.Tasks.CommandAttempts++
+			mu.Unlock()
 			status := "completed"
 			if r.Err != nil {
 				status = "partial"
@@ -294,6 +361,7 @@ func (p *Pipeline) Run(ctx context.Context) error {
 			}
 		})
 		err := fn(phaseCtx)
+		p.cfg.BudgetStatus = nil
 		state.FinishedAt = time.Now()
 		state.Status = "completed"
 		if errors.Is(err, runner.ErrUnavailable) || errors.Is(err, runner.ErrDisabled) {
@@ -310,6 +378,17 @@ func (p *Pipeline) Run(ctx context.Context) error {
 			}
 			phaseErrors = append(phaseErrors, fmt.Errorf("%s incomplete: %s", name, state.Reason))
 		}
+		if state.Status == "completed" && len(p.cfg.RetrySources) > 0 && prior.Status != "completed" {
+			state.Status = "partial"
+			state.Reason = "Selected sources completed; prior whole-phase coverage was " + prior.Status + ". Retry the full phase to reassess remaining coverage."
+			phaseErrors = append(phaseErrors, fmt.Errorf("%s incomplete: %s", name, state.Reason))
+		}
+		currentRun.Tasks.CommandAttempts += state.Tasks.CommandAttempts
+		currentRun.Tasks.Reused += state.Tasks.Reused
+		currentRun.Tasks.Executed += state.Tasks.Executed
+		currentRun.Tasks.Failed += state.Tasks.Failed
+		currentRun.Tasks.Pending += state.Tasks.Pending
+		p.log.Info("Phase %s jobs: %d reused, %d executed, %d failed, %d pending", name, state.Tasks.Reused, state.Tasks.Executed, state.Tasks.Failed, state.Tasks.Pending)
 		if state.Status != "completed" {
 			p.log.Warn("Phase %s: %s — %s", name, state.Status, state.Reason)
 			p.store.AddCoverage(name + ": " + state.Status + " — " + state.Reason)
@@ -357,6 +436,14 @@ func (p *Pipeline) Run(ctx context.Context) error {
 		}
 		return vuln.New(p.cfg, p.store, p.log, p.outDir).Run(c)
 	})
+	currentRun.FinishedAt = time.Now()
+	currentRun.Status = "completed"
+	if len(phaseErrors) > 0 {
+		currentRun.Status = "partial"
+	}
+	if ctx.Err() != nil {
+		currentRun.Status = "cancelled"
+	}
 	if err := p.checkpoint(); err != nil {
 		phaseErrors = append(phaseErrors, err)
 	}
@@ -388,17 +475,23 @@ func (p *Pipeline) Run(ctx context.Context) error {
 }
 
 type PhaseState struct {
-	Status     string    `json:"status"`
-	Reason     string    `json:"reason,omitempty"`
-	StartedAt  time.Time `json:"started_at,omitempty"`
-	FinishedAt time.Time `json:"finished_at,omitempty"`
+	Attempts   int                 `json:"attempts,omitempty"`
+	Sources    []string            `json:"sources,omitempty"`
+	Tasks      runner.TaskStats    `json:"tasks"`
+	Budgets    []config.BudgetPlan `json:"budgets,omitempty"`
+	Status     string              `json:"status"`
+	Reason     string              `json:"reason,omitempty"`
+	StartedAt  time.Time           `json:"started_at,omitempty"`
+	FinishedAt time.Time           `json:"finished_at,omitempty"`
 }
 type Manifest struct {
-	SchemaVersion int                   `json:"schema_version"`
-	Fingerprint   string                `json:"fingerprint"`
-	Target        config.Target         `json:"target"`
-	Scope         config.Scope          `json:"scope"`
-	Phases        map[string]PhaseState `json:"phases"`
+	WorkFingerprint string                `json:"work_fingerprint,omitempty"`
+	Runs            []RunRecord           `json:"runs,omitempty"`
+	SchemaVersion   int                   `json:"schema_version"`
+	Fingerprint     string                `json:"fingerprint"`
+	Target          config.Target         `json:"target"`
+	Scope           config.Scope          `json:"scope"`
+	Phases          map[string]PhaseState `json:"phases"`
 }
 
 func fingerprint(cfg *config.Config) string {

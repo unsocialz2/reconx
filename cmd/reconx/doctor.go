@@ -24,16 +24,18 @@ func doctor(cfg *config.Config) error {
 		Compatibility runner.Inspection `json:"compatibility"`
 	}
 	report := struct {
-		Version     string       `json:"version"`
-		Platform    string       `json:"platform"`
-		Workers     int          `json:"workers"`
-		Ports       bool         `json:"ports_enabled"`
-		Nuclei      bool         `json:"nuclei_enabled"`
-		Tools       []tool       `json:"tools"`
-		HostRPS     float64      `json:"built_in_host_rps"`
-		HTTPRetries int          `json:"built_in_http_retries"`
-		Scope       config.Scope `json:"scope"`
-		Notes       []string     `json:"notes"`
+		Version         string       `json:"version"`
+		Platform        string       `json:"platform"`
+		Workers         int          `json:"workers"`
+		Ports           bool         `json:"ports_enabled"`
+		Nuclei          bool         `json:"nuclei_enabled"`
+		Tools           []tool       `json:"tools"`
+		AdaptiveBudgets bool         `json:"adaptive_budgets"`
+		BudgetCap       int          `json:"adaptive_budget_cap_seconds"`
+		HostRPS         float64      `json:"built_in_host_rps"`
+		HTTPRetries     int          `json:"built_in_http_retries"`
+		Scope           config.Scope `json:"scope"`
+		Notes           []string     `json:"notes"`
 	}{Version: version, Platform: runtime.GOOS + "/" + runtime.GOARCH, Workers: cfg.Workers, Ports: cfg.Phases.PortScan, Nuclei: cfg.Phases.VulnScan}
 	if err := cfg.Validate(); err != nil {
 		return err
@@ -56,6 +58,8 @@ func doctor(cfg *config.Config) error {
 		resolved := runner.WhichPath(path)
 		report.Tools = append(report.Tools, tool{Name: n, Enabled: enabled, Path: resolved, Available: resolved != "", Timeout: t.Timeout, Compatibility: runner.Inspection{Status: "skipped", Version: "unknown"}})
 	}
+	report.AdaptiveBudgets = cfg.AdaptiveBudgets
+	report.BudgetCap = cfg.BudgetCap
 	report.HostRPS = cfg.HostRPS
 	report.HTTPRetries = cfg.HTTPRetries
 	report.Scope = cfg.Scope

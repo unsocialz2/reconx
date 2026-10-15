@@ -51,7 +51,7 @@ func (m *Module) Run(ctx context.Context) error {
 		"Probing all subdomains — status code, title, server, tech fingerprint")
 
 	subs := scope.New(m.cfg).FilterList(m.store.GetSubdomains())
-	if len(subs) == 0 {
+	if len(subs) == 0 && m.cfg.SelectsSource("httpx") {
 		// If subdomain enum was skipped (single target mode / --skip-subs), use Target.Domains
 		if len(m.cfg.Target.Domains) > 0 {
 			subs = scope.New(m.cfg).FilterList(m.cfg.Target.Domains)
@@ -72,7 +72,9 @@ func (m *Module) Run(ctx context.Context) error {
 	}
 
 	var err error
-	if !m.cfg.ToolAvailable(httpxPath) {
+	if !m.cfg.SelectsSource("httpx") {
+		err = m.saveAlive()
+	} else if !m.cfg.ToolAvailable(httpxPath) {
 		m.log.ToolSkipped("httpx", fmt.Sprintf("binary '%s' not found in PATH — falling back to curl", httpxPath))
 		err = m.runCurlFallback(ctx, subs)
 	} else {
@@ -89,17 +91,24 @@ func (m *Module) Run(ctx context.Context) error {
 	// ── WAF Detection (after httpx, before fuzzing/vuln scan) ───────────────
 	// Knowing whether a WAF is present lets us tune threads/timing in later
 	// phases to avoid getting blocked or rate-limited.
-	wafErr := m.runWAFDetection(ctx)
+	var wafErr error
+	if m.cfg.SelectsSource("wafw00f") {
+		wafErr = m.runWAFDetection(ctx)
+	}
 	m.saveAliveWAFSplit() // write live_waf.txt / live_nowaf.txt
 
 	// ── TLS / Certificate info ─────────────────────────────────────────────
 	// SANs from TLS certs often reveal subdomains not found by passive tools.
 	// Any new SANs discovered here are added back to the subdomain store.
-	m.runTLSX(ctx)
+	if len(m.cfg.RetrySources) == 0 {
+		m.runTLSX(ctx)
+	}
 
 	// ── Subdomain Takeover Check (subjack) ──────────────────────────────────
 	// Checks all discovered subdomains for dangling CNAMEs (AWS S3, GitHub Pages, Heroku, etc.)
-	m.runSubjack(ctx)
+	if len(m.cfg.RetrySources) == 0 {
+		m.runSubjack(ctx)
+	}
 
 	if ctx.Err() != nil {
 		return ctx.Err()
@@ -151,10 +160,7 @@ func (m *Module) runHttpx(ctx context.Context, subs []string, path string, tcfg 
 		}
 	})
 
-	budget := time.Hour
-	if tcfg.TotalTimeout > 0 {
-		budget = time.Duration(tcfg.TotalTimeout) * time.Second
-	}
+	budget := m.cfg.SourceBudget("httpx", len(subs), time.Hour)
 	ctx = runner.WithProcessObserver(ctx, func(pid int, alive bool) { board.Process("httpx", pid, alive) })
 	r := runner.RunInputBatches(ctx, path, args, input, 32, budget, "",
 		runner.WithUniqueLines(),
@@ -200,7 +206,11 @@ func (m *Module) runHttpx(ctx context.Context, subs []string, path string, tcfg 
 
 	if r.IsTimeout() {
 		board.Timeout("httpx", liveCount)
-		m.log.ToolTimeout("httpx", liveCount, time.Duration(tcfg.Timeout)*time.Second)
+		if r.TimeoutKind == "source-budget" {
+			m.log.Warn("%s — elapsed=%s, live results=%d", r.DiagString(), r.Duration.Round(time.Second), liveCount)
+		} else {
+			m.log.ToolTimeout("httpx", liveCount, time.Duration(tcfg.Timeout)*time.Second)
+		}
 	} else if r.Err != nil && len(m.store.GetHosts()) == 0 {
 		// httpx exits non-zero when 0 hosts respond — check stderr for real errors
 		m.log.ToolError("httpx", fmt.Errorf("%s", r.DiagString()), r.Stderr)
@@ -505,11 +515,8 @@ func (m *Module) runWAFDetection(ctx context.Context) error {
 	}
 	start := time.Now()
 	hosts := m.store.GetHosts()
-	budget := 30 * time.Minute
-	if tcfg.TotalTimeout > 0 {
-		budget = time.Duration(tcfg.TotalTimeout) * time.Second
-	}
-	runCtx, cancel := context.WithTimeout(ctx, budget)
+	budget := m.cfg.SourceBudget("wafw00f", len(hosts), 30*time.Minute)
+	runCtx, cancel := context.WithTimeoutCause(ctx, budget, runner.ErrSourceBudget)
 	defer cancel()
 	sem := make(chan struct{}, max(1, m.cfg.Workers))
 	var wg sync.WaitGroup
@@ -522,16 +529,25 @@ schedule:
 		if target == "" {
 			target = "https://" + h.Domain
 		}
-		if _, known := m.store.WAFStatus(target); known {
+		key := fmt.Sprintf("%x", sha256.Sum256([]byte(target)))
+		pendingFile := filepath.Join(store.DataDir(m.outDir), "waf-"+key+".json.pending")
+		_, pendingErr := os.Stat(pendingFile)
+		if _, known := m.store.WAFStatus(target); known && !runner.IsRefresh(ctx) && os.IsNotExist(pendingErr) {
+			runner.RecordTask(ctx, "wafw00f", "reused", 1)
 			mu.Lock()
 			checked++
 			mu.Unlock()
 			continue
 		}
+		if runCtx.Err() != nil {
+			runner.RecordTask(ctx, "wafw00f", "pending", 1)
+			continue
+		}
 		select {
 		case sem <- struct{}{}:
 		case <-runCtx.Done():
-			break schedule
+			runner.RecordTask(ctx, "wafw00f", "pending", 1)
+			continue schedule
 		}
 		wg.Add(1)
 		go func(target string) {
@@ -540,14 +556,34 @@ schedule:
 			key := fmt.Sprintf("%x", sha256.Sum256([]byte(target)))
 			outFile := filepath.Join(store.DataDir(m.outDir), "waf-"+key+".json")
 			doneFile := outFile + ".done"
+			pendingFile := outFile + ".pending"
+			_, pendingErr := os.Stat(pendingFile)
 			var results []*store.WAFResult
-			if _, err := os.Stat(doneFile); err == nil {
+			if _, err := os.Stat(doneFile); err == nil && !runner.IsRefresh(ctx) && os.IsNotExist(pendingErr) {
 				if data, err := os.ReadFile(outFile); err == nil {
 					results, _ = parseWAFJSON(data)
 				}
 			}
+			if len(results) > 0 {
+				runner.RecordTask(ctx, "wafw00f", "reused", 1)
+			}
 			if len(results) == 0 {
 				// One host per job prevents one slow target consuming the whole list's timeout.
+				if err := os.WriteFile(pendingFile, []byte("retry pending"), 0600); err != nil {
+					mu.Lock()
+					failed++
+					mu.Unlock()
+					runner.RecordTask(ctx, "wafw00f", "partial", 1)
+					return
+				}
+				_ = os.Remove(doneFile)
+				if err := os.Remove(outFile); err != nil && !os.IsNotExist(err) {
+					mu.Lock()
+					failed++
+					mu.Unlock()
+					runner.RecordTask(ctx, "wafw00f", "partial", 1)
+					return
+				}
 				perHost := min(timeout, 45*time.Second)
 				taskCtx, stop := context.WithTimeout(runCtx, perHost)
 				r := runner.Run(taskCtx, path, []string{"-i", writeWAFTarget(outFile, target), "-o", outFile, "-a"}, runner.WithTimeout(perHost))
@@ -555,12 +591,19 @@ schedule:
 				if data, err := os.ReadFile(outFile); err == nil {
 					results, _ = parseWAFJSON(data)
 				}
+				state := "completed"
+				if r.Err != nil || len(results) == 0 {
+					state = "partial"
+				}
+				runner.RecordTask(ctx, "wafw00f", state, 1)
 				if r.Err != nil || len(results) == 0 {
 					mu.Lock()
 					failed++
 					mu.Unlock()
 				} else {
-					_ = os.WriteFile(doneFile, []byte("completed"), 0600)
+					if err := os.WriteFile(doneFile, []byte("completed"), 0600); err == nil {
+						_ = os.Remove(pendingFile)
+					}
 				}
 			}
 			for _, result := range results {

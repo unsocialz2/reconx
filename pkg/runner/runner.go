@@ -18,14 +18,17 @@ import (
 
 // Result holds the output of a tool run
 type Result struct {
-	Tool     string
-	Args     []string
-	Lines    []string // stdout lines only (clean results)
-	Stderr   []string // stderr lines captured separately
-	Duration time.Duration
-	ExitCode int
-	Err      error
+	TimeoutKind string `json:",omitempty"`
+	Tool        string
+	Args        []string
+	Lines       []string // stdout lines only (clean results)
+	Stderr      []string // stderr lines captured separately
+	Duration    time.Duration
+	ExitCode    int
+	Err         error
 }
+
+var ErrSourceBudget = errors.New("source runtime budget exhausted")
 
 var ErrOutputLimit = errors.New("stdout capture limit reached; results are partial")
 
@@ -52,6 +55,8 @@ func (r *Result) DiagString() string {
 		return fmt.Sprintf("%s: cancelled; results are partial", r.Tool)
 	case r.IsNotFound():
 		return fmt.Sprintf("%s: binary not found in PATH — install it or check 'which %s'", r.Tool, r.Tool)
+	case r.IsTimeout() && r.TimeoutKind == "source-budget":
+		return fmt.Sprintf("%s: total source budget exhausted; partial results kept, pending jobs can be retried", r.Tool)
 	case r.IsTimeout():
 		return fmt.Sprintf("%s: timed out after %s — adjust [tool.%s] timeout/total_timeout or disable that tool; partial output retained", r.Tool, r.Duration.Round(time.Second), filepath.Base(r.Tool))
 	case r.ExitCode == 2:
@@ -423,14 +428,19 @@ func Run(ctx context.Context, name string, args []string, opts ...Option) (resul
 		runErr = errors.Join(runErr, ErrOutputLimit)
 	}
 
+	timeoutKind := ""
+	if errors.Is(context.Cause(runCtx), ErrSourceBudget) {
+		timeoutKind = "source-budget"
+	}
 	return &Result{
-		Tool:     name,
-		Args:     args,
-		Lines:    stdoutLines,
-		Stderr:   stderrLines,
-		Duration: dur,
-		ExitCode: exitCode,
-		Err:      runErr,
+		TimeoutKind: timeoutKind,
+		Tool:        name,
+		Args:        args,
+		Lines:       stdoutLines,
+		Stderr:      stderrLines,
+		Duration:    dur,
+		ExitCode:    exitCode,
+		Err:         runErr,
 	}
 }
 

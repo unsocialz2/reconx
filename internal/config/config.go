@@ -35,7 +35,7 @@ type ToolConfig struct {
 	Flags         []string
 	Timeout       int
 	RateLimit     int
-	TotalTimeout  int // hard total ParamSpider budget, seconds
+	TotalTimeout  int // explicit hard source budget, seconds; overrides adaptive planning
 	LateTimeout   int // grace after core URL sources finish, seconds
 	FallbackHosts int // maximum low-signal ParamSpider hosts
 	Extra         map[string]string
@@ -71,6 +71,13 @@ type OutputConfig struct {
 
 // Config is the root configuration
 type Config struct {
+	AdaptiveBudgets bool
+	BudgetCap       int
+	BudgetStatus    func(BudgetPlan) `json:"-"`
+	RetryPhases     []string
+	RetrySources    []string
+	Refresh         bool
+
 	httpMu         sync.Mutex
 	httpController *httpcontrol.Controller
 	HostRPS        float64
@@ -97,7 +104,8 @@ type Config struct {
 // All timeouts here are based on real-world runs against large targets (airbnb, etc.)
 func DefaultConfig() *Config {
 	return &Config{
-		Workers: 10,
+		Workers:         10,
+		AdaptiveBudgets: true, BudgetCap: 3600,
 		HostRPS: 2, HTTPRetries: 1, HTTPMaxBackoff: 30,
 		Phases: PhasesConfig{
 			SubdomainEnum: true,
@@ -337,6 +345,9 @@ func WriteDefault(path string) error {
 
 [runtime]
 workers = 10
+adaptive_budgets = true
+# Ceiling for adaptive plans; explicit tool total_timeout takes precedence.
+budget_cap = 3600
 # Built-in HTTP per-host limit; native tool rate caps are per process.
 host_rps = 2
 http_retries = 1
@@ -553,6 +564,10 @@ func applyConfigValue(cfg *Config, section, key, value string) {
 		}
 	case "runtime":
 		switch key {
+		case "adaptive_budgets":
+			cfg.AdaptiveBudgets = parseBool(value)
+		case "budget_cap":
+			cfg.BudgetCap = parseInt(value)
 		case "host_rps":
 			if _, err := fmt.Sscan(value, &cfg.HostRPS); err != nil {
 				cfg.HostRPS = -1
@@ -704,6 +719,13 @@ func (c *Config) HTTPController() *httpcontrol.Controller {
 	return c.httpController
 }
 func (c *Config) Validate() error {
+	if err := c.ValidateRetry(); err != nil {
+		return err
+	}
+	if c.BudgetCap < 1 || c.BudgetCap > 86400 {
+		return fmt.Errorf("budget-cap must be between 1 and 86400 seconds")
+	}
+
 	if c.Phases.PortScan && c.Scope.Imported != nil {
 		for _, a := range c.Scope.Imported.Assets {
 			if a.Kind == "origin" && !a.Excluded {

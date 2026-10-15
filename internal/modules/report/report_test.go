@@ -227,7 +227,7 @@ func TestReportContainsAllResultsAndMasksEvidence(t *testing.T) {
 	st.AddFinding(&store.Finding{Name: "Evidence fixture", Severity: "info", Target: "https://app.example.test", Evidence: "candidate=" + secret})
 	st.AddCoverage("Archive budget reached; partial results retained")
 	dir := t.TempDir()
-	manifest := `{"phases":{"ports":{"status":"skipped","reason":"opt-in disabled"},"vulnerabilities":{"status":"skipped","reason":"opt-in disabled"},"urls":{"status":"partial","reason":"source budget"}},"scope":{"InScope":["example.test"]}}`
+	manifest := `{"phases":{"ports":{"status":"skipped","reason":"opt-in disabled"},"vulnerabilities":{"status":"skipped","reason":"opt-in disabled"},"urls":{"status":"partial","reason":"source budget","attempts":2,"tasks":{"reused":2,"executed":1,"failed":1,"pending":3},"budgets":[{"tool":"katana","inputs":2400,"seconds":1800,"estimated_seconds":72030,"capped":true,"mode":"adaptive","reason":"heuristic fixture"}]}},"runs":[{"mode":"retry-source","status":"partial","started_at":"2026-10-15T01:00:00Z","finished_at":"2026-10-15T01:30:00Z","sources":["katana"],"tasks":{"reused":2,"executed":1,"failed":1,"pending":3,"command_attempts":1}}],"scope":{"InScope":["example.test"]}}`
 	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(manifest), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -252,6 +252,9 @@ func TestReportContainsAllResultsAndMasksEvidence(t *testing.T) {
 	}
 	if strings.Contains(html, secret) || strings.Contains(html, "</script><img src=x") {
 		t.Fatal("unsafe embedded data")
+	}
+	if len(w.Runs) != 1 || len(w.Phases["urls"].Budgets) != 1 || w.Runs[0].Tasks.Reused != 2 {
+		t.Fatal("retry/budget metadata missing", w.Runs)
 	}
 	if w.Phases["ports"].Status != "skipped" {
 		t.Fatal(w.Phases)

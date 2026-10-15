@@ -10,11 +10,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/unsocialz2/reconx/internal/config"
 	"github.com/unsocialz2/reconx/internal/store"
 	"github.com/unsocialz2/reconx/pkg/logger"
+	"github.com/unsocialz2/reconx/pkg/runner"
 )
 
 type workspace struct {
+	Runs        []runReport            `json:"runs,omitempty"`
 	Comparison  any                    `json:"comparison,omitempty"`
 	Version     string                 `json:"version"`
 	Targets     []string               `json:"targets"`
@@ -28,11 +31,24 @@ type workspace struct {
 	Screenshots map[string]string      `json:"screenshots"`
 	Artifacts   []artifactReport       `json:"artifacts"`
 }
+type runReport struct {
+	Status     string           `json:"status"`
+	StartedAt  time.Time        `json:"started_at"`
+	FinishedAt time.Time        `json:"finished_at"`
+	Mode       string           `json:"mode"`
+	Phases     []string         `json:"phases"`
+	Sources    []string         `json:"sources"`
+	Tasks      runner.TaskStats `json:"tasks"`
+}
 type phaseReport struct {
-	Status     string    `json:"status"`
-	Reason     string    `json:"reason"`
-	StartedAt  time.Time `json:"started_at"`
-	FinishedAt time.Time `json:"finished_at"`
+	Attempts   int                 `json:"attempts"`
+	Sources    []string            `json:"sources"`
+	Tasks      runner.TaskStats    `json:"tasks"`
+	Budgets    []config.BudgetPlan `json:"budgets"`
+	Status     string              `json:"status"`
+	Reason     string              `json:"reason"`
+	StartedAt  time.Time           `json:"started_at"`
+	FinishedAt time.Time           `json:"finished_at"`
 }
 type parameterReport struct {
 	Name   string `json:"name"`
@@ -57,10 +73,12 @@ func generateWorkspace(st *store.Store, targets []string, outDir string) error {
 	snap.Secrets = redactSecrets(snap.Secrets)
 	w := workspace{Version: "1.2.0", Targets: targets, GeneratedAt: time.Now().UTC().Format(time.RFC3339), Data: snap, Phases: map[string]phaseReport{}, Screenshots: map[string]string{}}
 	var manifest struct {
+		Runs   []runReport            `json:"runs"`
 		Phases map[string]phaseReport `json:"phases"`
 		Scope  any                    `json:"scope"`
 	}
 	if raw, err := os.ReadFile(filepath.Join(outDir, "manifest.json")); err == nil && json.Unmarshal(raw, &manifest) == nil {
+		w.Runs = manifest.Runs
 		w.Phases = manifest.Phases
 		w.Scope = manifest.Scope
 	}

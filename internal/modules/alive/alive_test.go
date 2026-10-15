@@ -6,6 +6,7 @@ import (
 	"github.com/unsocialz2/reconx/internal/config"
 	"github.com/unsocialz2/reconx/internal/store"
 	"github.com/unsocialz2/reconx/pkg/logger"
+	"github.com/unsocialz2/reconx/pkg/runner"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -163,5 +164,52 @@ func TestHTTPX503IsObservedButNeverLive(t *testing.T) {
 	unavailable, err := os.ReadFile(filepath.Join(dir, "http_unavailable.txt"))
 	if err != nil || !strings.Contains(string(unavailable), "https://down.example.test") {
 		t.Fatal("503 evidence lost", err)
+	}
+}
+
+func TestFailedWAFRefreshCannotReuseOldSuccessOnNextRetry(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "waf-fixture")
+	fail := filepath.Join(dir, "fail")
+	calls := filepath.Join(dir, "calls")
+	script := `#!/bin/sh
+while [ "$#" -gt 0 ];do case "$1" in -i) input="$2";shift;;-o) out="$2";shift;;esac;shift;done
+echo call >> '` + calls + `'
+if [ -f '` + fail + `' ];then exit 2;fi
+url=$(cat "$input")
+printf '[{"url":"%s","detected":false,"firewall":"None"}]' "$url" > "$out"
+`
+	if err := os.WriteFile(bin, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.DefaultConfig()
+	cfg.Target.Domains = []string{"example.test"}
+	cfg.Tools["wafw00f"] = config.ToolConfig{Enabled: true, Path: bin, Timeout: 1, TotalTimeout: 1}
+	st := store.New("waf-refresh")
+	st.AddHost(&store.Host{Domain: "app.example.test", StatusCode: 200, Meta: map[string]string{"url": "https://app.example.test"}})
+	if err := os.WriteFile(filepath.Join(dir, "alive.txt"), []byte("fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	log := logger.New(false, "")
+	defer log.Close()
+	m := New(cfg, st, log, dir)
+	if err := m.runWAFDetection(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fail, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.runWAFDetection(runner.WithRefresh(context.Background(), true)); err == nil {
+		t.Fatal("failed refresh hidden")
+	}
+	if err := os.Remove(fail); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.runWAFDetection(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(calls)
+	if len(strings.Fields(string(data))) != 3 {
+		t.Fatalf("stale success reused: %s", data)
 	}
 }

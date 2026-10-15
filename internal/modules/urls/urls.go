@@ -115,7 +115,7 @@ func (m *Module) Run(ctx context.Context) error {
 	paramCtx, cancelParam := context.WithCancelCause(ctx)
 	defer cancelParam(nil)
 	paramDone := make(chan struct{})
-	if m.cfg.ToolAvailable("paramspider") {
+	if m.cfg.SelectsSource("paramspider") && m.cfg.ToolAvailable("paramspider") {
 		board.Register("paramspider", "waiting for URL discovery results")
 		go func() {
 			defer close(paramDone)
@@ -131,6 +131,10 @@ func (m *Module) Run(ctx context.Context) error {
 	}
 	for _, t := range tools {
 		t := t
+		if !m.cfg.SelectsSource(t.name) {
+			board.Skip(t.name, "not selected for retry")
+			continue
+		}
 		if t.binKey != "" && !m.cfg.ToolAvailable(t.binKey) {
 			board.Skip(t.name, "disabled or unavailable")
 			m.log.ToolSkipped(t.name, "disabled or unavailable")
@@ -162,7 +166,19 @@ func (m *Module) Run(ctx context.Context) error {
 				}
 			})
 			toolCtx = runner.WithProcessObserver(toolCtx, func(pid int, alive bool) { board.Process(t.name, pid, alive) })
+			batched := t.name == "waybackurls" || t.name == "katana" || t.name == "hakrawler" || t.name == "gospider"
+			if !batched {
+				sourceBudget := m.cfg.SourceBudget(t.name, count, 30*time.Minute)
+				var stopSource context.CancelFunc
+				toolCtx, stopSource = context.WithTimeoutCause(toolCtx, sourceBudget, runner.ErrSourceBudget)
+				defer stopSource()
+			}
 			results := t.fn(toolCtx, input)
+			if !batched && toolCtx.Err() != nil {
+				mu.Lock()
+				failures = append(failures, &runner.Result{Tool: t.name, Err: toolCtx.Err(), TimeoutKind: "source-budget"})
+				mu.Unlock()
+			}
 			filtered := util.Deduplicate(m.scope.FilterList(results))
 			m.store.AddURLs(filtered)
 			if len(filtered) > 0 {
@@ -187,7 +203,7 @@ func (m *Module) Run(ctx context.Context) error {
 	board.Stop()
 	var incomplete []error
 	m.log.Info("URL Discovery source summary:")
-	stats := board.SourceStats()
+	stats := mergeSourceSummary(m.outDir, "url_discovery_summary.json", board.SourceStats(), m.cfg.RetrySources)
 	for _, status := range stats {
 		label := status.State
 		if label == "done" {
@@ -256,10 +272,7 @@ func (m *Module) runWayback(ctx context.Context, input string) []string {
 	m.log.Tool("waybackurls", fmt.Sprintf("%d domains", count))
 	m.log.ToolCmd("waybackurls", []string{}, fmt.Sprintf("[%d domains via stdin]", count))
 
-	budget := 30 * time.Minute
-	if tcfg.TotalTimeout > 0 {
-		budget = time.Duration(tcfg.TotalTimeout) * time.Second
-	}
+	budget := m.cfg.SourceBudget("waybackurls", len(splitLines(input)), 30*time.Minute)
 	r := runner.RunInputBatches(ctx, path, nil, input, 32, budget, "",
 		runner.WithUniqueLines(),
 		runner.WithTimeout(timeout),
@@ -271,7 +284,11 @@ func (m *Module) runWayback(ctx context.Context, input string) []string {
 		}))
 
 	if r.IsTimeout() {
-		m.log.ToolTimeout("waybackurls", len(r.Lines), timeout)
+		if r.TimeoutKind == "source-budget" {
+			m.log.Warn("%s — elapsed=%s, retained lines=%d", r.DiagString(), r.Duration.Round(time.Second), len(r.Lines))
+		} else {
+			m.log.ToolTimeout("waybackurls", len(r.Lines), timeout)
+		}
 		return r.Lines
 	}
 	if r.Err != nil && len(r.Lines) == 0 {
@@ -447,10 +464,7 @@ func (m *Module) runKatana(ctx context.Context, input string) []string {
 		timeout = 10 * time.Minute
 	}
 
-	budget := 30 * time.Minute
-	if tcfg.TotalTimeout > 0 {
-		budget = time.Duration(tcfg.TotalTimeout) * time.Second
-	}
+	budget := m.cfg.SourceBudget("katana", len(splitLines(input)), 30*time.Minute)
 	r := runner.RunInputBatches(ctx, "katana", args, input, 32, budget, "",
 		runner.WithUniqueLines(),
 		runner.WithTimeout(timeout),
@@ -462,7 +476,11 @@ func (m *Module) runKatana(ctx context.Context, input string) []string {
 		}))
 
 	if r.IsTimeout() {
-		m.log.ToolTimeout("katana", len(r.Lines), timeout)
+		if r.TimeoutKind == "source-budget" {
+			m.log.Warn("%s — elapsed=%s, retained lines=%d", r.DiagString(), r.Duration.Round(time.Second), len(r.Lines))
+		} else {
+			m.log.ToolTimeout("katana", len(r.Lines), timeout)
+		}
 		return r.Lines
 	}
 	if r.Err != nil && len(r.Lines) == 0 {
@@ -486,17 +504,18 @@ func (m *Module) runHakrawler(ctx context.Context, input string) []string {
 		timeout = 5 * time.Minute
 	}
 
-	budget := 30 * time.Minute
-	if tcfg.TotalTimeout > 0 {
-		budget = time.Duration(tcfg.TotalTimeout) * time.Second
-	}
+	budget := m.cfg.SourceBudget("hakrawler", len(splitLines(input)), 30*time.Minute)
 	r := runner.RunInputBatches(ctx, "hakrawler", args, input, 32, budget, "",
 		runner.WithUniqueLines(),
 		runner.WithTimeout(timeout),
 		runner.WithStderrCallback(func(line string) { m.log.Debug("hakrawler: %s", line) }))
 
 	if r.IsTimeout() {
-		m.log.ToolTimeout("hakrawler", len(r.Lines), timeout)
+		if r.TimeoutKind == "source-budget" {
+			m.log.Warn("%s — elapsed=%s, retained lines=%d", r.DiagString(), r.Duration.Round(time.Second), len(r.Lines))
+		} else {
+			m.log.ToolTimeout("hakrawler", len(r.Lines), timeout)
+		}
 		return r.Lines
 	}
 	if r.Err != nil && len(r.Lines) == 0 {
@@ -522,17 +541,18 @@ func (m *Module) runGospider(ctx context.Context, input string) []string {
 		timeout = 5 * time.Minute
 	}
 
-	budget := 30 * time.Minute
-	if tcfg.TotalTimeout > 0 {
-		budget = time.Duration(tcfg.TotalTimeout) * time.Second
-	}
+	budget := m.cfg.SourceBudget("gospider", len(splitLines(input)), 30*time.Minute)
 	r := runner.RunInputBatches(ctx, "gospider", args, input, 32, budget, "-S",
 		runner.WithUniqueLines(),
 		runner.WithTimeout(timeout),
 		runner.WithStderrCallback(func(line string) { m.log.Debug("gospider: %s", line) }))
 
 	if r.IsTimeout() {
-		m.log.ToolTimeout("gospider", len(r.Lines), timeout)
+		if r.TimeoutKind == "source-budget" {
+			m.log.Warn("%s — elapsed=%s, retained lines=%d", r.DiagString(), r.Duration.Round(time.Second), len(r.Lines))
+		} else {
+			m.log.ToolTimeout("gospider", len(r.Lines), timeout)
+		}
 	} else if r.Err != nil && len(r.Lines) == 0 {
 		m.log.ToolError("gospider", fmt.Errorf("%s", r.DiagString()), r.Stderr)
 		return nil

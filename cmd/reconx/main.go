@@ -65,7 +65,7 @@ func run(args []string) error {
 		}
 	}
 	fs := flag.NewFlagSet("reconx", flag.ContinueOnError)
-	var domains, ips, asns, cloudAssets listFlag
+	var domains, ips, asns, cloudAssets, retryPhases, retrySources listFlag
 	var configPath, scopePath, scopeCSV, reportDir, previousDir string
 	var scopePreview bool
 	var initConfig, showVersion, showDoctor bool
@@ -84,6 +84,11 @@ func run(args []string) error {
 	fs.StringVar(&cfg.Target.OrgName, "org", cfg.Target.OrgName, "Explicit GitHub organization")
 	fs.StringVar(&cfg.Output.OutputDir, "output", cfg.Output.OutputDir, "Output directory")
 	fs.StringVar(&cfg.ResumeDir, "resume", "", "Resume a scan with the same target/scope")
+	fs.Var(&retryPhases, "retry-phase", "Retry selected phases in an existing scan (repeatable or comma-separated)")
+	fs.Var(&retrySources, "retry-source", "Retry isolated URL/alive/subdomain sources (repeatable or comma-separated)")
+	fs.BoolVar(&cfg.Refresh, "refresh", false, "Rerun selected work instead of reusing completed jobs; requires retry selection")
+	fs.BoolVar(&cfg.AdaptiveBudgets, "adaptive-budgets", cfg.AdaptiveBudgets, "Plan source budgets from workload (explicit total_timeout still wins)")
+	fs.IntVar(&cfg.BudgetCap, "budget-cap", cfg.BudgetCap, "Maximum adaptive source budget in seconds")
 	fs.StringVar(&cfg.BugBountyHeader, "header", cfg.BugBountyHeader, "Testing header Name: Value")
 	fs.StringVar(&cfg.WordlistPath, "wordlist", cfg.WordlistPath, "DNS wordlist")
 	fs.StringVar(&cfg.ResolversPath, "resolvers", cfg.ResolversPath, "DNS resolvers file")
@@ -139,6 +144,11 @@ func run(args []string) error {
 	}
 	visited := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { visited[f.Name] = true })
+	cfg.RetryPhases = config.NormalizeRetry(retryPhases)
+	cfg.RetrySources = config.NormalizeRetry(retrySources)
+	if reportDir != "" && (cfg.HasRetry() || cfg.Refresh) {
+		return fmt.Errorf("--report-only cannot be combined with execution retry/refresh flags")
+	}
 	if previousDir != "" && reportDir == "" {
 		return fmt.Errorf("--compare-with requires --report-only")
 	}
@@ -202,6 +212,8 @@ func run(args []string) error {
 			return err
 		}
 	}
+	cfg.RetryPhases = config.NormalizeRetry(retryPhases)
+	cfg.RetrySources = config.NormalizeRetry(retrySources)
 	if err := cfg.Validate(); err != nil {
 		return err
 	}

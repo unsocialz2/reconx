@@ -114,11 +114,8 @@ func (m *Module) runParamSpider(ctx context.Context, input string) []string {
 	cfg := m.cfg.Tools["paramspider"]
 	domains, total := selectParamHosts(m.scope.FilterList(splitLines(input)), m.store.GetURLs(), cfg.FallbackHosts)
 	m.log.Tool("paramspider", fmt.Sprintf("%d/%d prioritized hosts, workers=%d", len(domains), total, m.workers()))
-	seconds := cfg.TotalTimeout
-	if seconds <= 0 {
-		seconds = 2700
-	}
-	runCtx, cancel := context.WithTimeoutCause(ctx, time.Duration(seconds)*time.Second, errParamTotalBudget)
+	budget := m.cfg.SourceBudget("paramspider", len(domains), 45*time.Minute)
+	runCtx, cancel := context.WithTimeoutCause(ctx, budget, errParamTotalBudget)
 	defer cancel()
 	timeout := time.Duration(cfg.Timeout) * time.Second
 	if timeout <= 0 {
