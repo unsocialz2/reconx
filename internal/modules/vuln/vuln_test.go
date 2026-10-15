@@ -96,7 +96,7 @@ printf '%s\n' '{"template-id":"fixture","info":{"name":"Fixture","severity":"med
 	cfg := config.DefaultConfig()
 	cfg.Tools["nuclei"] = config.ToolConfig{Enabled: true, Path: bin, Timeout: 1}
 	st := store.New("test")
-	st.AddHost(&store.Host{Domain: "example.test", Meta: map[string]string{"url": "https://example.test"}})
+	st.AddHost(&store.Host{Domain: "example.test", StatusCode: 200, Meta: map[string]string{"url": "https://example.test"}})
 	l := logger.New(false, "")
 	defer l.Close()
 	err := New(cfg, st, l, dir).Run(context.Background())

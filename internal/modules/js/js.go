@@ -41,7 +41,7 @@ func (m *Module) Run(ctx context.Context) error {
 	// ── Pre-step: Discover active JS files from live web hosts ─────────────
 	if m.cfg.ToolAvailable("subjs") {
 		var liveURLs []string
-		for _, h := range m.store.GetHosts() {
+		for _, h := range m.store.GetLiveHosts() {
 			if u, ok := h.Meta["url"]; ok && u != "" {
 				liveURLs = append(liveURLs, u)
 			} else {

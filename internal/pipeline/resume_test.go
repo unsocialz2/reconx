@@ -60,7 +60,7 @@ func TestFailedToolNeverCompletesAndRetries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.store.AddHost(&store.Host{Domain: "example.com", Meta: map[string]string{"url": "https://example.com"}})
+	p.store.AddHost(&store.Host{Domain: "example.com", StatusCode: 200, Meta: map[string]string{"url": "https://example.com"}})
 	if err = p.Run(context.Background()); err == nil {
 		t.Fatal("tool failure reported success")
 	}

@@ -43,7 +43,7 @@ func (m *Module) Run(ctx context.Context) error {
 	}
 	sem := make(chan struct{}, n)
 	var wg sync.WaitGroup
-	for _, h := range m.store.GetHosts() {
+	for _, h := range m.store.GetLiveHosts() {
 		raw := h.Meta["url"]
 		if raw == "" {
 			raw = "https://" + h.Domain

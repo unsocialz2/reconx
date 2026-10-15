@@ -39,7 +39,7 @@ func (m *Module) Run(ctx context.Context) error {
 	m.log.Phase("Directory & Content Fuzzing",
 		"feroxbuster (primary) → dirsearch (fallback) → ffuf (last resort) — recursive, multi-ext")
 
-	hosts := m.store.GetHosts()
+	hosts := m.store.GetLiveHosts()
 	if len(hosts) == 0 {
 		m.log.Warn("No live hosts to fuzz — alive phase may have failed or no hosts are up")
 		return nil

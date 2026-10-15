@@ -39,6 +39,25 @@ func New(cfg *config.Config, st *store.Store, sc *scope.Filter, log *logger.Logg
 	return &Module{cfg: cfg, store: st, scope: sc, log: log, outDir: outDir}
 }
 
+// discoveryInputs keeps passive archive coverage while withholding failed services
+// from active crawler seeds. An unavailable root does not erase historical URLs.
+func discoveryInputs(hosts []*store.Host) (aliveURLs, domainList []string) {
+	for _, h := range hosts {
+		u := h.Meta["url"]
+		if u == "" {
+			u = "https://" + h.Domain
+		}
+		if h.IsLive() {
+			aliveURLs = append(aliveURLs, u)
+		}
+		domainList = append(domainList, h.Domain)
+	}
+
+	aliveURLs = util.Deduplicate(aliveURLs)
+	domainList = util.Deduplicate(domainList)
+	return aliveURLs, domainList
+}
+
 func (m *Module) Run(ctx context.Context) error {
 	m.log.Phase("URL Discovery",
 		"Wayback, GAU, Katana, hakrawler, gospider, paramspider, OTX — merged & deduplicated")
@@ -46,28 +65,15 @@ func (m *Module) Run(ctx context.Context) error {
 	start := time.Now()
 	hosts := m.store.GetHosts()
 	if len(hosts) == 0 {
-		m.log.Warn("No live hosts for URL discovery — alive check phase found nothing")
+		m.log.Warn("No observed HTTP endpoints for URL discovery — alive phase found nothing")
 		return nil
 	}
 
-	// Build URL and domain input lists
-	aliveURLs := make([]string, 0, len(hosts))
-	domainList := make([]string, 0, len(hosts))
-	for _, h := range hosts {
-		u := h.Meta["url"]
-		if u == "" {
-			u = "https://" + h.Domain
-		}
-		aliveURLs = append(aliveURLs, u)
-		domainList = append(domainList, h.Domain)
-	}
-
-	aliveURLs = util.Deduplicate(aliveURLs)
-	domainList = util.Deduplicate(domainList)
+	aliveURLs, domainList := discoveryInputs(hosts)
 	urlInput := strings.Join(aliveURLs, "\n")
 	domInput := strings.Join(domainList, "\n")
 
-	m.log.Info("URL discovery: %d live hosts → parallel core sources, budgeted ParamSpider enrichment", len(hosts))
+	m.log.Info("URL discovery: %d observed endpoints, %d live seeds → parallel sources, budgeted enrichment", len(hosts), len(aliveURLs))
 	board := m.log.NewProgressBoard()
 	m.board = board
 
@@ -134,7 +140,15 @@ func (m *Module) Run(ctx context.Context) error {
 		if t.useURL {
 			input = urlInput
 		}
-		board.Register(t.name, fmt.Sprintf("%d hosts", len(aliveURLs)))
+		if t.useURL && len(aliveURLs) == 0 {
+			board.Skip(t.name, "no live HTTP seeds (5xx/429/unknown excluded)")
+			continue
+		}
+		count := len(domainList)
+		if t.useURL {
+			count = len(aliveURLs)
+		}
+		board.Register(t.name, fmt.Sprintf("%d hosts", count))
 		coreWG.Add(1)
 		go func() {
 			defer coreWG.Done()

@@ -14,17 +14,45 @@ import (
 	"github.com/unsocialz2/reconx/pkg/util"
 )
 
-// Host represents a discovered live host
+// Host represents an observed HTTP endpoint, including unavailable services.
 type Host struct {
 	Domain     string            `json:"domain"`
 	IP         string            `json:"ip,omitempty"`
 	StatusCode int               `json:"status_code,omitempty"`
+	HTTPState  string            `json:"http_state"`
 	Title      string            `json:"title,omitempty"`
 	Server     string            `json:"server,omitempty"`
 	Port       int               `json:"port,omitempty"`
 	TechStack  []string          `json:"tech_stack,omitempty"`
 	Tags       []string          `json:"tags,omitempty"`
 	Meta       map[string]string `json:"meta,omitempty"`
+}
+
+// HTTPState classifies the observed response, not the health of the origin
+// behind a proxy or WAF. A missing/invalid status is never proof of liveness.
+func HTTPState(code int) string {
+	switch {
+	case code >= 200 && code < 300:
+		return "available"
+	case code >= 300 && code < 400:
+		return "redirect"
+	case code == 401 || code == 403:
+		return "restricted"
+	case code == 429:
+		return "rate-limited"
+	case code >= 400 && code < 500:
+		return "client-error"
+	case code >= 500 && code < 600:
+		return "unavailable"
+	default:
+		return "unknown"
+	}
+}
+
+// IsLive excludes server failures, rate limits, and unverified responses.
+// 4xx (except 429) remain reachable surfaces, not successful page loads.
+func (h *Host) IsLive() bool {
+	return h != nil && h.StatusCode >= 200 && h.StatusCode < 500 && h.StatusCode != 429
 }
 
 // Port holds a discovered open port
@@ -264,10 +292,11 @@ func (s *Store) GetIPRanges() []string {
 	return out
 }
 
-// AddHost records a live host
+// AddHost records an observed endpoint without discarding failed HTTP responses.
 func (s *Store) AddHost(h *Host) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	h.HTTPState = HTTPState(h.StatusCode)
 	key := h.Meta["url"]
 	if u, err := url.Parse(key); err == nil && u.Host != "" {
 		key = strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host)
@@ -277,13 +306,24 @@ func (s *Store) AddHost(h *Host) {
 	s.Hosts[key] = h
 }
 
-// GetHosts returns all live hosts
+// GetHosts returns all observed endpoints, including unavailable services.
 func (s *Store) GetHosts() []*Host {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]*Host, 0, len(s.Hosts))
 	for _, h := range s.Hosts {
 		out = append(out, h)
+	}
+	return out
+}
+
+// GetLiveHosts returns endpoints suitable as seeds for active discovery.
+func (s *Store) GetLiveHosts() []*Host {
+	var out []*Host
+	for _, h := range s.GetHosts() {
+		if h.IsLive() {
+			out = append(out, h)
+		}
 	}
 	return out
 }
@@ -440,19 +480,34 @@ func (s *Store) GetParamResults() []*ParamFinding {
 func (s *Store) Stats() map[string]int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	live, unavailable, limited := 0, 0, 0
+	for _, h := range s.Hosts {
+		if h.IsLive() {
+			live++
+		}
+		if HTTPState(h.StatusCode) == "unavailable" {
+			unavailable++
+		}
+		if h.StatusCode == 429 {
+			limited++
+		}
+	}
 	return map[string]int{
-		"subdomains":    len(s.Subdomains),
-		"live_hosts":    len(s.Hosts),
-		"open_ports":    len(s.Ports),
-		"urls":          len(s.URLs),
-		"js_files":      len(s.JSFiles),
-		"findings":      len(s.Findings),
-		"secrets":       len(s.Secrets),
-		"dir_results":   len(s.DirResults),
-		"waf_results":   len(s.WAFResults),
-		"cloud_assets":  len(s.CloudAssets),
-		"cors_results":  len(s.CORSResults),
-		"param_results": len(s.ParamResults),
+		"subdomains":         len(s.Subdomains),
+		"live_hosts":         live,
+		"http_endpoints":     len(s.Hosts),
+		"unavailable_hosts":  unavailable,
+		"rate_limited_hosts": limited,
+		"open_ports":         len(s.Ports),
+		"urls":               len(s.URLs),
+		"js_files":           len(s.JSFiles),
+		"findings":           len(s.Findings),
+		"secrets":            len(s.Secrets),
+		"dir_results":        len(s.DirResults),
+		"waf_results":        len(s.WAFResults),
+		"cloud_assets":       len(s.CloudAssets),
+		"cors_results":       len(s.CORSResults),
+		"param_results":      len(s.ParamResults),
 	}
 }
 
@@ -504,6 +559,9 @@ func (s *Store) Snapshot() Snapshot {
 	data, _ := json.Marshal(snap)
 	var copy Snapshot
 	_ = json.Unmarshal(data, &copy)
+	for _, h := range copy.Hosts {
+		h.HTTPState = HTTPState(h.StatusCode)
+	}
 	return copy
 }
 func AtomicWrite(path string, data []byte, mode os.FileMode) error {
@@ -696,9 +754,9 @@ func (s *Store) WAFStatus(hostOrURL string) (detected, known bool) {
 	return false, known
 }
 
-// GetWAFHosts returns live host URLs that are behind a WAF.
+// GetWAFHosts returns live seed URLs that are behind a WAF.
 func (s *Store) GetWAFHosts() []string {
-	hosts := s.GetHosts()
+	hosts := s.GetLiveHosts()
 	var out []string
 	for _, h := range hosts {
 		url := h.Meta["url"]
@@ -714,7 +772,7 @@ func (s *Store) GetWAFHosts() []string {
 
 // GetNonWAFHosts returns live host URLs that are NOT behind a WAF.
 func (s *Store) GetNonWAFHosts() []string {
-	hosts := s.GetHosts()
+	hosts := s.GetLiveHosts()
 	var out []string
 	for _, h := range hosts {
 		url := h.Meta["url"]

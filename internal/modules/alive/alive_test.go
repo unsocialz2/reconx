@@ -2,6 +2,7 @@ package alive
 
 import (
 	"context"
+	"fmt"
 	"github.com/unsocialz2/reconx/internal/config"
 	"github.com/unsocialz2/reconx/internal/store"
 	"github.com/unsocialz2/reconx/pkg/logger"
@@ -86,5 +87,81 @@ printf '[{"url":"%s","detected":false,"firewall":"None"}]' "$url" > "$out"
 	raw, _ := os.ReadFile(calls)
 	if strings.Count(string(raw), "fast.example.test") != 1 {
 		t.Fatalf("completed host reran: %s", raw)
+	}
+}
+
+func TestUnavailableFallbackPreservesEvidenceButNotLiveSeeds(t *testing.T) {
+	for _, code := range []int{200, 403, 429, 503} {
+		t.Run(fmt.Sprint(code), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(code) }))
+			defer server.Close()
+			cfg := config.DefaultConfig()
+			cfg.Target.Domains = []string{"127.0.0.1"}
+			st := store.New("availability")
+			dir := t.TempDir()
+			l := logger.New(false, "")
+			defer l.Close()
+			m := New(cfg, st, l, dir)
+			if err := m.runCurlFallback(context.Background(), []string{strings.TrimPrefix(server.URL, "http://")}); err != nil {
+				t.Fatal(err)
+			}
+			if len(st.GetHosts()) != 1 || st.GetHosts()[0].StatusCode != code {
+				t.Fatal("HTTP evidence lost")
+			}
+			observed, err := os.ReadFile(filepath.Join(dir, "http_responded.txt"))
+			if err != nil || !strings.Contains(string(observed), server.URL) {
+				t.Fatal("observed endpoint missing", err)
+			}
+			alive, err := os.ReadFile(filepath.Join(dir, "alive.txt"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantLive := code == 200 || code == 403
+			if strings.Contains(string(alive), server.URL) != wantLive {
+				t.Fatalf("status %d wrongly included/excluded from live list: %s", code, alive)
+			}
+			name := "http_unavailable.txt"
+			if code == 429 {
+				name = "http_rate_limited.txt"
+			}
+			if !wantLive {
+				raw, err := os.ReadFile(filepath.Join(dir, name))
+				if err != nil || !strings.Contains(string(raw), server.URL) {
+					t.Fatal("unavailable/rate-limit evidence missing", err)
+				}
+			}
+		})
+	}
+}
+
+func TestHTTPX503IsObservedButNeverLive(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "httpx-fixture")
+	script := "#!/bin/sh\nprintf '%s\\n' '{\"url\":\"https://down.example.test\",\"status_code\":503,\"title\":\"Service Unavailable\"}'\n"
+	if err := os.WriteFile(bin, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.DefaultConfig()
+	cfg.Target.Domains = []string{"example.test"}
+	st := store.New("httpx-unavailable")
+	log := logger.New(false, "")
+	defer log.Close()
+	m := New(cfg, st, log, dir)
+	if err := m.runHttpx(context.Background(), []string{"down.example.test"}, bin, config.ToolConfig{Timeout: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.GetHosts()) != 1 || st.GetHosts()[0].StatusCode != 503 || st.Stats()["live_hosts"] != 0 {
+		t.Fatal("503 incorrectly classified", st.Snapshot().Hosts, st.Stats())
+	}
+	alive, err := os.ReadFile(filepath.Join(dir, "alive.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(alive)) != "" {
+		t.Fatal("503 leaked into live seeds", string(alive))
+	}
+	unavailable, err := os.ReadFile(filepath.Join(dir, "http_unavailable.txt"))
+	if err != nil || !strings.Contains(string(unavailable), "https://down.example.test") {
+		t.Fatal("503 evidence lost", err)
 	}
 }

@@ -29,6 +29,9 @@
           ui-sans-serif,
           system-ui,
           -apple-system,
+          "Segoe UI Emoji",
+          "Apple Color Emoji",
+          "Noto Color Emoji",
           sans-serif;
         color: var(--ink);
         background: var(--bg);
@@ -594,19 +597,817 @@
           content: " · Use the interactive HTML or CSV/JSON exports for the complete dataset.";
         }
       }
+      /* Offline intelligence dashboard: no external fonts, scripts or assets. */
+      :root {
+        --bg: #edf2f8;
+        --panel: #ffffff;
+        --ink: #182940;
+        --muted: #61758e;
+        --line: #dce5f0;
+        --teal: #007d77;
+        --soft: #dcf7f0;
+        --radius: 18px;
+        --nav: #0b1426;
+        --shadow: 0 8px 30px #19324b08;
+      }
+      .dark {
+        --bg: #0a1020;
+        --panel: #111c30;
+        --ink: #edf3ff;
+        --muted: #9aaec9;
+        --line: #22324d;
+        --teal: #62e4c0;
+        --soft: #163a37;
+        --nav: #090f1d;
+        --shadow: 0 10px 34px #00000017;
+        --red: #ff96a8;
+      }
+      body {
+        background:
+          radial-gradient(ellipse at 85% 0%, #53b3e50b, transparent 55%),
+          var(--bg);
+      }
+      button {
+        transition:
+          border-color 0.18s,
+          background 0.18s,
+          transform 0.18s;
+      }
+      button:disabled {
+        cursor: default;
+        opacity: 0.4;
+      }
+      .app {
+        grid-template-columns: 246px minmax(0, 1fr);
+      }
+      aside {
+        border-right: 1px solid #21304a;
+        padding: 27px 14px;
+        scrollbar-width: thin;
+        scrollbar-color: #334461 transparent;
+      }
+      .brand {
+        padding: 0 10px;
+        letter-spacing: -1.2px;
+        font-size: 29px;
+        display: flex;
+        align-items: center;
+        gap: 0;
+      }
+      .brand-icon {
+        font-size: 27px;
+        margin-right: 8px;
+      }
+      .edition {
+        padding: 8px 12px 20px;
+        letter-spacing: 2.6px;
+        color: #92a4bf;
+        font-size: 9px;
+      }
+      .nav {
+        padding: 10px 12px;
+        font-size: 12px;
+        gap: 10px;
+        border: 1px solid transparent;
+      }
+      .nav-icon {
+        font-style: normal;
+        width: 23px;
+        font-size: 16px;
+        text-align: center;
+        flex-shrink: 0;
+      }
+      .nav:hover {
+        background: #17243a;
+        color: #fff;
+        border-color: transparent;
+      }
+      .nav.active {
+        color: #83f4d3;
+        background: linear-gradient(100deg, #1b453f, #122b31);
+        border-color: #2c6156;
+        box-shadow: inset 3px 0 #63dfb9;
+      }
+      .nav span {
+        border-radius: 5px;
+        padding: 2px 6px;
+        background: #ffffff09;
+        font-size: 10px;
+      }
+      .nav-caption {
+        padding-top: 22px;
+        color: #778ba9;
+        font-weight: 700;
+      }
+      aside > .nav-caption {
+        display: none;
+      }
+      .main {
+        padding: 28px 32px 40px;
+        max-width: 1900px;
+        width: 100%;
+        margin: 0 auto;
+      }
+      .topbar {
+        margin-bottom: 24px;
+        padding-bottom: 21px;
+        border-bottom: 1px solid var(--line);
+      }
+      .target {
+        font-size: 17px;
+        margin-top: 5px;
+      }
+      .eyebrow {
+        font-size: 9px;
+        letter-spacing: 1.7px;
+      }
+      .actions button {
+        font-size: 11px;
+        padding: 8px 10px;
+        border-radius: 9px;
+      }
+      .offline {
+        font-size: 10px;
+        border: 1px solid #39977f33;
+      }
+      h1 {
+        font-size: 30px;
+        letter-spacing: -1px;
+      }
+      h2 {
+        font-size: 15px;
+        letter-spacing: -0.2px;
+      }
+      .section-icon {
+        font-size: 0.85em;
+        margin-right: 10px;
+      }
+      .intro {
+        max-width: 850px;
+        font-size: 13px;
+        margin-top: 9px;
+      }
+      .hero {
+        position: relative;
+        isolation: isolate;
+        overflow: hidden;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 24px;
+        padding: 32px 34px;
+        margin-bottom: 20px;
+        border-radius: 22px;
+        border: 1px solid #36556c;
+        background:
+          radial-gradient(ellipse at 92% 40%, #367c6c70, transparent 57%),
+          linear-gradient(115deg, #13233e, #122e3a);
+        box-shadow: 0 15px 45px #07102318;
+        color: #f2f7ff;
+      }
+      .hero::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        z-index: -1;
+        opacity: 0.13;
+        background-image:
+          linear-gradient(#77afcf55 1px, transparent 1px),
+          linear-gradient(90deg, #77afcf55 1px, transparent 1px);
+        background-size: 34px 34px;
+        mask-image: linear-gradient(90deg, transparent, #000);
+      }
+      .hero h1 {
+        font-size: clamp(27px, 2.6vw, 43px);
+        margin: 10px 0;
+        letter-spacing: -1.6px;
+      }
+      .hero .section-icon {
+        display: none;
+      }
+      .hero .intro {
+        margin-bottom: 20px;
+        color: #b7cddd;
+        max-width: 540px;
+        font-size: 13px;
+      }
+      .hero-kicker {
+        font-size: 9px;
+        letter-spacing: 2.4px;
+        font-weight: 750;
+        color: #8be8cd;
+      }
+      .hero-meta {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .hero-meta span {
+        padding: 5px 9px;
+        border: 1px solid #84b7c02b;
+        border-radius: 7px;
+        background: #06142a2b;
+        font-size: 10px;
+        color: #d8e7f2;
+        overflow-wrap: anywhere;
+      }
+      .hero-seal {
+        flex-shrink: 0;
+        width: 170px;
+        height: 170px;
+        border-radius: 50%;
+        border: 1px solid #70ddc04a;
+        background: repeating-radial-gradient(
+          circle,
+          #69c7b00b 0 27px,
+          #77dbbe33 28px 29px,
+          transparent 30px 38px
+        );
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        box-shadow: 0 0 50px #68d8bb18;
+      }
+      .hero-seal span {
+        font-size: 56px;
+        filter: drop-shadow(0 4px 20px #8af9d74a);
+      }
+      .hero-seal small {
+        font-size: 7px;
+        letter-spacing: 1.5px;
+        margin-top: 7px;
+        color: #9de5d5;
+      }
+      .banner {
+        font-size: 12px;
+        padding: 12px 17px;
+        border-radius: 12px;
+        margin-bottom: 20px;
+      }
+      .dark .banner {
+        background: #342b1a;
+        border-color: #67512d;
+        color: #f2d99e;
+      }
+      .cards {
+        gap: 13px;
+        margin-bottom: 20px;
+      }
+      .card,
+      .panel {
+        box-shadow: var(--shadow);
+      }
+      .card {
+        position: relative;
+        padding: 19px;
+        overflow: hidden;
+        border-top: 2px solid #51cba25c;
+        transition:
+          transform 0.2s,
+          box-shadow 0.2s,
+          border-color 0.2s;
+      }
+      .card:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 12px 30px #12233817;
+      }
+      .card-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 12px;
+      }
+      .metric-icon {
+        display: grid;
+        place-items: center;
+        width: 35px;
+        height: 35px;
+        border: 1px solid #61cdbb33;
+        border-radius: 10px;
+        background: #51cba210;
+        font-size: 19px;
+      }
+      .metric-arrow {
+        color: var(--muted);
+        font-size: 15px;
+      }
+      .card .label {
+        font-size: 11px;
+        font-weight: 600;
+      }
+      .card .number {
+        font-size: 33px;
+        line-height: 1.25;
+        margin: 5px 0;
+        font-variant-numeric: tabular-nums;
+      }
+      .card .note {
+        font-size: 10px;
+        line-height: 1.6;
+      }
+      .card[data-metric="unavailable"] {
+        border-top-color: #ff809699;
+      }
+      .card[data-metric="unavailable"] .metric-icon {
+        background: #ff809610;
+        border-color: #ff809633;
+      }
+      .card[data-metric="urls"],
+      .card[data-metric="js"] {
+        border-top-color: #69a9ff88;
+      }
+      .card[data-metric="findings"],
+      .card[data-metric="secrets"] {
+        border-top-color: #b89aff88;
+      }
+      .grid {
+        gap: 18px;
+      }
+      .insight-grid {
+        grid-template-columns: 1.1fr 1fr;
+      }
+      .panel {
+        padding: 23px;
+      }
+      .panel-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .panel-heading h2 {
+        margin: 0;
+      }
+      .panel-note {
+        font-size: 11px;
+        margin: 10px 0 20px;
+      }
+      .health-body {
+        display: flex;
+        align-items: center;
+        gap: 24px;
+      }
+      .health-ring {
+        flex: 0 0 154px;
+        width: 154px;
+        height: 154px;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        padding: 13px;
+        box-shadow: 0 0 35px #61cdbb0c;
+      }
+      .ring-center {
+        width: 100%;
+        height: 100%;
+        border-radius: 50%;
+        background: var(--panel);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        border: 5px solid var(--panel);
+      }
+      .ring-center strong {
+        font-size: 32px;
+        letter-spacing: -1px;
+      }
+      .ring-center span {
+        color: var(--muted);
+        font-size: 8px;
+        letter-spacing: 1px;
+      }
+      .health-legend {
+        flex: 1;
+        min-width: 0;
+      }
+      .legend-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        border: 1px solid transparent;
+        width: 100%;
+        padding: 5px 3px;
+        font-size: 10px;
+        text-align: left;
+      }
+      .legend-dot {
+        flex: 0 0 6px;
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+      }
+      .legend-row strong {
+        margin-left: auto;
+        font-size: 11px;
+        font-variant-numeric: tabular-nums;
+      }
+      .review-row {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        text-align: left;
+        border: 0;
+        border-bottom: 1px solid var(--line);
+        border-radius: 0;
+        padding: 12px 0;
+      }
+      .review-row:last-child {
+        border-bottom: 0;
+      }
+      .review-row:hover {
+        background: var(--bg);
+      }
+      .review-row div {
+        flex: 1;
+        min-width: 0;
+      }
+      .review-row strong {
+        font-size: 11px;
+        display: block;
+      }
+      .review-row small {
+        font-size: 9px;
+        display: block;
+        color: var(--muted);
+        margin-top: 3px;
+      }
+      .review-row b {
+        font-size: 20px;
+        font-variant-numeric: tabular-nums;
+      }
+      .review-icon {
+        font-size: 19px;
+        width: 29px;
+      }
+      .phase-label {
+        font-size: 12px;
+        text-transform: capitalize;
+      }
+      .phase-label small {
+        display: block;
+        font-size: 10px;
+        max-width: 460px;
+        text-transform: none;
+      }
+      .bar {
+        height: 7px;
+        margin-bottom: 11px;
+      }
+      .bar i {
+        background: linear-gradient(90deg, #38a7a0, #76d8be);
+      }
+      .pill {
+        border-radius: 7px;
+        font-size: 10px;
+        padding: 5px 8px;
+        font-weight: 600;
+      }
+      .available {
+        background: #dcf6e9;
+        color: #146c4b;
+      }
+      .redirect {
+        background: #e4eeff;
+        color: #2a5c9c;
+      }
+      .restricted {
+        background: #eee6ff;
+        color: #69459a;
+      }
+      .unavailable {
+        background: #ffe7ed;
+        color: #a82e4b;
+      }
+      .rate-limited {
+        background: #fff0d8;
+        color: #8b5c12;
+      }
+      .client-error {
+        background: #e9edf4;
+        color: #4b607c;
+      }
+      .dark .available {
+        background: #163d34;
+        color: #79e8b9;
+      }
+      .dark .redirect {
+        background: #1e3453;
+        color: #93c1ff;
+      }
+      .dark .restricted {
+        background: #332746;
+        color: #d0b6ff;
+      }
+      .dark .unavailable {
+        background: #432632;
+        color: #ffa9ba;
+      }
+      .dark .rate-limited {
+        background: #3d311d;
+        color: #f6cc80;
+      }
+      .dark .client-error {
+        background: #253348;
+        color: #bac8dd;
+      }
+      .http-tabs {
+        display: flex;
+        gap: 9px;
+        flex-wrap: wrap;
+        margin: 20px 0 16px;
+      }
+      .http-tabs button {
+        font-size: 12px;
+        border-radius: 10px;
+        padding: 9px 13px;
+      }
+      .http-tabs .selected {
+        color: var(--teal);
+        border-color: var(--teal);
+        background: var(--soft);
+      }
+      .toolbar input {
+        background: var(--panel);
+      }
+      th {
+        padding: 14px 17px;
+      }
+      .table-panel {
+        padding: 0;
+      }
+      .drawer {
+        z-index: 10;
+        box-shadow: -40px 0 100px #0006;
+      }
+      .endpoint-summary {
+        border: 1px solid var(--line);
+        background: var(--bg);
+        border-radius: 15px;
+        padding: 20px;
+        margin: 18px 0;
+      }
+      .endpoint-summary > strong {
+        display: block;
+        font-size: 19px;
+        margin: 12px 0 6px;
+        overflow-wrap: anywhere;
+      }
+      .endpoint-summary p {
+        font-size: 12px;
+        margin: 0;
+      }
+      .record-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+        margin: 20px 0;
+      }
+      .record-field {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 13px;
+        overflow-wrap: anywhere;
+      }
+      .record-field small {
+        display: block;
+        color: var(--muted);
+        font-size: 10px;
+        margin-bottom: 5px;
+      }
+      .record-field strong,
+      .record-field a {
+        font-size: 12px;
+      }
+      .raw-details {
+        margin: 20px 0;
+      }
+      .raw-details summary {
+        cursor: pointer;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .drawer textarea,
+      .drawer select {
+        background: var(--bg);
+        color: var(--ink);
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        padding: 9px;
+      }
+      .footer {
+        line-height: 1.9;
+        padding-top: 20px;
+        border-top: 1px solid var(--line);
+      }
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          transition: none !important;
+          scroll-behavior: auto !important;
+        }
+      }
+      @media (max-width: 1250px) {
+        .health-body {
+          gap: 15px;
+          flex-direction: column;
+        }
+        .health-legend {
+          width: 100%;
+        }
+        .hero-seal {
+          width: 140px;
+          height: 140px;
+        }
+      }
+      @media (max-width: 1000px) {
+        .app {
+          grid-template-columns: 205px minmax(0, 1fr);
+        }
+        .main {
+          padding: 23px;
+        }
+        .cards {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .grid,
+        .insight-grid {
+          grid-template-columns: 1fr;
+        }
+        .health-body {
+          flex-direction: row;
+        }
+        .hero {
+          padding: 25px;
+        }
+        .hero-seal {
+          display: none;
+        }
+        .topbar {
+          align-items: flex-start;
+          flex-direction: column;
+          gap: 15px;
+        }
+      }
+      @media (max-width: 680px) {
+        .app {
+          display: block;
+        }
+        aside {
+          position: relative;
+          height: auto;
+          padding: 16px 10px 8px;
+        }
+        .brand {
+          font-size: 25px;
+        }
+        .nav-caption {
+          display: none;
+        }
+        .nav {
+          padding: 9px;
+          margin-right: 5px;
+        }
+        nav {
+          margin-top: 12px;
+          padding-bottom: 8px;
+          scrollbar-width: thin;
+          scrollbar-color: #334461 transparent;
+        }
+        .main {
+          padding: 18px 14px;
+        }
+        .hero {
+          border-radius: 16px;
+          padding: 23px 20px;
+        }
+        .hero h1 {
+          font-size: 28px;
+        }
+        .hero .intro {
+          font-size: 12px;
+        }
+        .hero-meta {
+          gap: 6px;
+        }
+        .hero-meta span {
+          font-size: 9px;
+        }
+        .cards {
+          gap: 10px;
+        }
+        .card {
+          padding: 15px;
+          border-radius: 13px;
+        }
+        .card .number {
+          font-size: 28px;
+        }
+        .card .note {
+          font-size: 9px;
+        }
+        .panel {
+          padding: 18px;
+        }
+        .table-panel {
+          padding: 0;
+        }
+        .health-body {
+          flex-direction: column;
+        }
+        .health-ring {
+          width: 166px;
+          height: 166px;
+          flex-basis: 166px;
+        }
+        .legend-row {
+          font-size: 11px;
+          padding: 7px 4px;
+        }
+        .actions {
+          gap: 6px;
+        }
+        .offline {
+          padding: 6px 8px;
+        }
+        .actions button {
+          font-size: 10px;
+          padding: 7px 8px;
+        }
+        .http-tabs {
+          gap: 6px;
+        }
+        .record-grid {
+          grid-template-columns: 1fr;
+        }
+        .http-tabs button {
+          font-size: 10px;
+          padding: 8px;
+        }
+        .pager {
+          flex-wrap: wrap;
+        }
+        h1 {
+          font-size: 25px;
+        }
+      }
+      @media print {
+        body.dark {
+          --bg: #fff;
+          --panel: #fff;
+          --ink: #111;
+          --muted: #555;
+          --line: #ddd;
+        }
+        .hero {
+          color: #111;
+          background: #f4f6f8;
+          border: 1px solid #ccc;
+        }
+        .hero .intro,
+        .hero-kicker {
+          color: #444;
+        }
+        .hero-meta span {
+          color: #333;
+          background: #eee;
+        }
+        .hero-seal,
+        .http-tabs {
+          display: none;
+        }
+        .card {
+          transform: none;
+          box-shadow: none;
+        }
+        .health-body {
+          flex-direction: row;
+        }
+        .cards {
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+        }
+      }
     </style>
   </head>
-  <body>
+  <body class="dark">
     <div class="app">
       <aside>
         <div class="brand">
-          recon<em>x</em
+          <span class="brand-icon" aria-hidden="true">🛰️</span> recon<em>x</em
           ><span
-            style="font-size:11px;margin-left:7px;letter-spacing:0;color:#8ca1b4"
+            style="
+              font-size: 11px;
+              margin-left: 7px;
+              letter-spacing: 0;
+              color: #8ca1b4;
+            "
             >1.2</span
           >
         </div>
-        <div class="edition">RECONNAISSANCE WORKSPACE</div>
+        <div class="edition">RECON INTELLIGENCE</div>
         <div class="nav-caption">SCAN REFERENCE</div>
         <nav id="navigation"></nav>
         <div class="aside-note">
@@ -621,11 +1422,11 @@
             <div class="target" id="targets"></div>
           </div>
           <div class="actions">
-            <span class="offline">● Offline ready</span
+            <span class="offline">🔒 Offline ready</span
             ><button id="theme" aria-label="Toggle color theme">
-              Dark mode</button
-            ><button id="export-all">Export JSON</button
-            ><button id="print">Print</button>
+              ☀️ Light mode</button
+            ><button id="export-all">📥 Export JSON</button
+            ><button id="print">🖨️ Print</button>
           </div>
         </header>
         <div id="pages"></div>
@@ -651,7 +1452,9 @@
     </script>
     <script>
       "use strict";
-      const SCAN_DATA = JSON.parse(document.getElementById("scan-data").textContent),
+      const SCAN_DATA = JSON.parse(
+          document.getElementById("scan-data").textContent,
+        ),
         D = SCAN_DATA.data;
       const $ = (s) => document.querySelector(s),
         arr = (x) => (Array.isArray(x) ? x : []),
@@ -684,7 +1487,8 @@
       const safeLink = (raw) => {
         try {
           const u = new URL(raw);
-          if (!["http:", "https:"].includes(u.protocol)) return node("span", raw);
+          if (!["http:", "https:"].includes(u.protocol))
+            return node("span", raw);
           const a = node("a", raw);
           a.href = u.href;
           a.target = "_blank";
@@ -700,7 +1504,8 @@
       const queryNamesByURL = new Map();
       for (const p of allParameters) {
         if (p.source === "URL query") {
-          if (!queryNamesByURL.has(p.url)) queryNamesByURL.set(p.url, new Set());
+          if (!queryNamesByURL.has(p.url))
+            queryNamesByURL.set(p.url, new Set());
           queryNamesByURL.get(p.url).add(p.name);
         }
       }
@@ -748,7 +1553,9 @@
         const a = asset(h.domain);
         if (a) {
           a.endpoints.push(h);
-          a.technologies = [...new Set([...a.technologies, ...arr(h.tech_stack)])];
+          a.technologies = [
+            ...new Set([...a.technologies, ...arr(h.tech_stack)]),
+          ];
         }
       });
       arr(D.urls).forEach((u) => {
@@ -814,6 +1621,61 @@
           for (const item of arr(change[state]))
             comparisonRows.push({ collection, state, item });
       }
+      const httpState = (code) => {
+        if (code >= 200 && code < 300) return "available";
+        if (code >= 300 && code < 400) return "redirect";
+        if (code === 401 || code === 403) return "restricted";
+        if (code === 429) return "rate-limited";
+        if (code >= 400 && code < 500) return "client-error";
+        if (code >= 500 && code < 600) return "unavailable";
+        return "unknown";
+      };
+      const isLive = (h) =>
+        h.status_code >= 200 && h.status_code < 500 && h.status_code !== 429;
+      const httpRows = arr(D.hosts).map((h) => ({
+        ...h,
+        http_state: httpState(h.status_code),
+      }));
+      const liveRows = httpRows.filter(isLive);
+      const httpGroups = [
+        ["available", "✅", "Available · 2xx", "#38d9a9"],
+        ["redirect", "↗️", "Redirect · 3xx", "#69a9ff"],
+        ["restricted", "🔐", "Restricted · 401/403", "#b89aff"],
+        ["client-error", "📄", "Other client errors · 4xx", "#a0afc4"],
+        ["rate-limited", "⏳", "Rate limited · 429", "#ffc66d"],
+        ["unavailable", "🚧", "Unavailable · 5xx", "#ff8096"],
+        ["unknown", "❔", "Unverified", "#637388"],
+      ];
+      const httpCounts = Object.fromEntries(
+        httpGroups.map(([key]) => [
+          key,
+          httpRows.filter((h) => h.http_state === key).length,
+        ]),
+      );
+      const icons = {
+        overview: "🛰️",
+        assets: "🗂️",
+        subdomains: "🌐",
+        hosts: "💓",
+        urls: "🔗",
+        js: "⚡",
+        params: "🎛️",
+        ports: "🔌",
+        networks: "📡",
+        screenshots: "📸",
+        findings: "🎯",
+        secrets: "🔑",
+        directories: "📁",
+        cors: "🔀",
+        cloud: "☁️",
+        waf: "🛡️",
+        phases: "🧭",
+        sources: "📊",
+        comparison: "🔄",
+        tasks: "🧩",
+        coverage: "⚠️",
+        artifacts: "🧾",
+      };
       const tables = {
         comparison: {
           title: "Scan comparison",
@@ -883,10 +1745,12 @@
         screenshots: {
           title: "Screenshots",
           note: "Captured images require the screenshots directory to remain beside this report.",
-          rows: Object.entries(SCAN_DATA.screenshots || {}).map(([host, image]) => ({
-            host,
-            image,
-          })),
+          rows: Object.entries(SCAN_DATA.screenshots || {}).map(
+            ([host, image]) => ({
+              host,
+              image,
+            }),
+          ),
           cols: [
             ["Host", "host"],
             ["Image", "image"],
@@ -903,12 +1767,14 @@
           ],
         },
         hosts: {
-          title: "Live HTTP endpoints",
-          note: "An HTTP response establishes reachability, not vulnerability or authorization.",
-          rows: arr(D.hosts),
+          title: "HTTP surface & availability",
+          note: "Live seeds: 2xx–4xx except 429. A 503 is an observed response with an unavailable service, not a live seed. 401/403 are restricted; other 4xx are client errors. Observations do not prove origin health.",
+          rows: httpRows,
+          filter: "http_state",
           cols: [
             ["Endpoint", hostURL],
             ["HTTP status", "status_code"],
+            ["Availability", "http_state"],
             ["Title", "title"],
             ["Server", "server"],
             ["IP", "ip"],
@@ -986,6 +1852,7 @@
           cols: [
             ["URL", "url"],
             ["HTTP status", "status_code"],
+            ["Availability", "http_state"],
             ["Size", "size"],
             ["Source", "tool"],
           ],
@@ -1124,12 +1991,28 @@
       }
       const states = {};
       let current = "overview";
-      $("#targets").textContent = arr(SCAN_DATA.targets).join(" · ") || D.scan_id;
+      $("#targets").textContent =
+        arr(SCAN_DATA.targets).join(" · ") || D.scan_id;
       $("#footer").textContent =
         `ReconX ${SCAN_DATA.version} · Scan ${D.scan_id} · Generated ${SCAN_DATA.generated_at} · Duration ${D.duration} · All collections included; visible tables are paginated.`;
       for (const [id, label] of definitions) {
-        const b = node("button", label, "nav");
+        const b = node("button", undefined, "nav");
+        const icon = node("i", icons[id], "nav-icon");
+        icon.setAttribute("aria-hidden", "true");
+        b.append(icon, document.createTextNode(label));
         b.dataset.page = id;
+        if (["overview", "findings", "phases"].includes(id))
+          $("#navigation").append(
+            node(
+              "div",
+              id === "overview"
+                ? "DISCOVER"
+                : id === "findings"
+                  ? "INVESTIGATE"
+                  : "SCAN OPERATIONS",
+              "nav-caption",
+            ),
+          );
         const count = tables[id]?.rows.length;
         if (count !== undefined) b.append(node("span", fmt(count)));
         b.onclick = () => show(id);
@@ -1140,7 +2023,11 @@
       }
       function heading(id, title, note) {
         const el = $("#" + id);
-        el.append(node("h1", title), node("p", note, "muted intro"));
+        const h = node("h1");
+        const icon = node("span", icons[id], "section-icon");
+        icon.setAttribute("aria-hidden", "true");
+        h.append(icon, document.createTextNode(title));
+        el.append(h, node("p", note, "muted intro"));
         return el;
       }
       function show(id) {
@@ -1151,7 +2038,13 @@
           .forEach((el) => el.classList.toggle("active", el.id === id));
         document
           .querySelectorAll(".nav")
-          .forEach((el) => el.classList.toggle("active", el.dataset.page === id));
+          .forEach((el) =>
+            el.classList.toggle("active", el.dataset.page === id),
+          );
+        document.querySelectorAll(".nav").forEach((el) => {
+          if (el.dataset.page === id) el.setAttribute("aria-current", "page");
+          else el.removeAttribute("aria-current");
+        });
         if (tables[id] && !states[id]) initTable(id);
         history.replaceState(null, "", "#" + id);
         window.scrollTo(0, 0);
@@ -1175,8 +2068,23 @@
             .sort()
             .forEach((v) => selector.append(new Option(v || "(empty)", v)));
         else selector.hidden = true;
-        const exportButton = node("button", "Export matching CSV");
+        const exportButton = node("button", "📥 Export matching CSV");
         toolbar.append(search, selector, exportButton);
+        if (id === "hosts") {
+          const tabs = node("div", undefined, "http-tabs");
+          for (const [key, label, count] of [
+            ["live", "💓 Live seeds", liveRows.length],
+            ["all", "📡 All observed", httpRows.length],
+            ["unavailable", "🚧 Unavailable", httpCounts.unavailable],
+            ["rate-limited", "⏳ Rate limited", httpCounts["rate-limited"]],
+          ]) {
+            const b = node("button", label + " · " + fmt(count));
+            b.dataset.preset = key;
+            b.onclick = () => setHTTPView(key);
+            tabs.append(b);
+          }
+          section.append(tabs);
+        }
         section.append(toolbar);
         const panel = node("div", undefined, "panel table-panel"),
           scroll = node("div", undefined, "scroll"),
@@ -1212,6 +2120,7 @@
         section.append(panel);
         states[id] = {
           query: "",
+          preset: id === "hosts" ? "live" : "all",
           filter: "",
           page: 0,
           sort: null,
@@ -1234,6 +2143,7 @@
         };
         selector.onchange = () => {
           states[id].filter = selector.value;
+          if (id === "hosts") states[id].preset = "all";
           states[id].page = 0;
           draw(id);
         };
@@ -1248,11 +2158,25 @@
         exportButton.onclick = () => exportCSV(id);
         draw(id);
       }
+      function setHTTPView(preset = "all", state = "") {
+        show("hosts");
+        const s = states.hosts;
+        s.preset = preset;
+        s.filter = state;
+        s.selector.value = state;
+        s.page = 0;
+        s.query = "";
+        s.search.value = "";
+        draw("hosts");
+      }
       function matching(id) {
         const def = tables[id],
           s = states[id];
         let rows = def.rows.filter(
           (r) =>
+            (id !== "hosts" ||
+              s.preset === "all" ||
+              (s.preset === "live" ? isLive(r) : r.http_state === s.preset)) &&
             (!s.filter || String(r[def.filter]) === s.filter) &&
             (!s.query ||
               def.cols.some(([, key]) =>
@@ -1282,6 +2206,12 @@
           0,
           Math.min(s.page, Math.max(0, Math.ceil(rows.length / size) - 1)),
         );
+        if (id === "hosts")
+          document.querySelectorAll(".http-tabs button").forEach((b) => {
+            const active = b.dataset.preset === s.preset && !s.filter;
+            b.classList.toggle("selected", active);
+            b.setAttribute("aria-pressed", String(active));
+          });
         s.tbody.replaceChildren();
         for (const r of rows.slice(s.page * size, (s.page + 1) * size)) {
           const tr = node("tr");
@@ -1302,9 +2232,14 @@
                 a.download = "";
               }
               td.append(a);
-            } else if (["State", "Severity", "WAF"].includes(label))
+            } else if (label === "HTTP status")
+              td.append(pill(v || "—", httpState(Number(v))));
+            else if (
+              ["State", "Severity", "WAF", "Availability"].includes(label)
+            )
               td.append(pill(v));
-            else if (/^https?:\/\//.test(String(v))) td.append(safeLink(String(v)));
+            else if (/^https?:\/\//.test(String(v)))
+              td.append(safeLink(String(v)));
             else td.textContent = String(v);
             tr.append(td);
           });
@@ -1370,12 +2305,71 @@
             "muted",
           ),
         );
-        el.append(node("pre", JSON.stringify(r, null, 2)));
+        if (r.status_code !== undefined) {
+          const state = httpState(r.status_code);
+          const summary = node("div", undefined, "endpoint-summary");
+          summary.append(pill(`${r.status_code || "—"} · ${state}`, state));
+          summary.append(
+            node("strong", r.title || r.domain || "HTTP observation"),
+          );
+          summary.append(
+            node(
+              "p",
+              isLive(r)
+                ? "Included in live discovery seeds. A reachable endpoint is not necessarily a successful page or healthy origin."
+                : "Retained as evidence. Excluded from live discovery seeds and live counts.",
+              "muted",
+            ),
+          );
+          el.append(summary);
+        }
+        const details = node("div", undefined, "record-grid");
+        const fields = [
+          ["🌐 Endpoint", r.meta?.url || r.url || r.target || r.file],
+          ["🏷️ Name", r.name || r.type],
+          ["🚦 Severity", r.severity],
+          ["📡 Server", r.server],
+          ["📍 IP address", r.ip],
+          ["🧩 Source", r.source || r.tool || r.template],
+        ];
+        for (const [label, v] of fields) {
+          if (!v) continue;
+          const field = node("div", undefined, "record-field");
+          field.append(
+            node("small", label),
+            /^https?:\/\//.test(String(v))
+              ? safeLink(String(v))
+              : node("strong", v),
+          );
+          details.append(field);
+        }
+        el.append(details);
+        if (arr(r.tech_stack).length) {
+          const chips = node("div", undefined, "chipset");
+          arr(r.tech_stack).forEach((t) => chips.append(pill(t)));
+          el.append(chips);
+        }
+        for (const [label, v] of [
+          ["Description", r.description],
+          ["Evidence", r.evidence],
+        ])
+          if (v) el.append(node("h2", label), node("pre", v));
+        const raw = node("details", undefined, "raw-details");
+        raw.append(
+          node("summary", "🧾 Full record & metadata"),
+          node("pre", JSON.stringify(r, null, 2)),
+        );
+        el.append(raw);
         const controls = node("div", undefined, "panel");
         controls.append(node("h2", "Manual review"));
         const select = node("select");
         select.setAttribute("aria-label", "Review status");
-        for (const status of ["candidate", "reviewed", "false positive", "confirmed"])
+        for (const status of [
+          "candidate",
+          "reviewed",
+          "false positive",
+          "confirmed",
+        ])
           select.append(new Option(status, status));
         const key = recordKey(r);
         select.value = reviews[key]?.status || "candidate";
@@ -1383,7 +2377,8 @@
         note.setAttribute("aria-label", "Review notes");
         note.placeholder = "Evidence and impact notes (local to this browser)";
         note.value = reviews[key]?.note || "";
-        note.style.cssText = "display:block;width:100%;min-height:90px;margin:12px 0";
+        note.style.cssText =
+          "display:block;width:100%;min-height:90px;margin:12px 0";
         const save = node("button", "Save local review");
         const message = node(
           "p",
@@ -1391,7 +2386,10 @@
           "muted",
         );
         save.onclick = () => {
-          reviews[key] = { status: select.value, note: note.value.slice(0, 4000) };
+          reviews[key] = {
+            status: select.value,
+            note: note.value.slice(0, 4000),
+          };
           SCAN_DATA.reviews = reviews;
           try {
             localStorage.setItem(reviewKey, JSON.stringify(reviews));
@@ -1444,7 +2442,13 @@
         el.append(chips);
         for (const h of a.endpoints) {
           const row = node("div", undefined, "row");
-          row.append(safeLink(hostURL(h)), pill(h.status_code));
+          row.append(
+            safeLink(hostURL(h)),
+            pill(
+              `${h.status_code || "—"} · ${httpState(h.status_code)}`,
+              httpState(h.status_code),
+            ),
+          );
           el.append(row);
         }
         for (const [id, label] of [
@@ -1486,11 +2490,27 @@
       document.addEventListener("keydown", (e) => {
         if (e.key === "Escape") $("#drawer").hidden = true;
       });
+      try {
+        document.body.classList.toggle(
+          "dark",
+          localStorage.getItem("reconx-theme") !== "light",
+        );
+      } catch {}
+      function themeLabel() {
+        $("#theme").textContent = document.body.classList.contains("dark")
+          ? "☀️ Light mode"
+          : "🌙 Dark mode";
+      }
+      themeLabel();
       $("#theme").onclick = () => {
         document.body.classList.toggle("dark");
-        $("#theme").textContent = document.body.classList.contains("dark")
-          ? "Light mode"
-          : "Dark mode";
+        themeLabel();
+        try {
+          localStorage.setItem(
+            "reconx-theme",
+            document.body.classList.contains("dark") ? "dark" : "light",
+          );
+        } catch {}
       };
       $("#export-all").onclick = () =>
         download(
@@ -1501,11 +2521,19 @@
       $("#print").onclick = () => window.print();
       const overview = heading(
         "overview",
-        "Reconnaissance, connected.",
+        "Your recon. In focus.",
         "Your assets, evidence and coverage in one place. Searchable offline, without truncating collected results.",
       );
       const incomplete = phaseRows.filter((p) =>
-        ["partial", "failed", "running", "error"].includes(p.status),
+        [
+          "partial",
+          "failed",
+          "running",
+          "error",
+          "timeout",
+          "cancelled",
+          "interrupted",
+        ].includes(p.status),
       );
       const banner = node("div", undefined, "banner");
       banner.append(
@@ -1520,15 +2548,37 @@
           `Ports: ${phaseStatus("ports")}. Nuclei: ${phaseStatus("vulnerabilities")}. Zero findings does not establish a clean assessment.`,
         ),
       );
+      overview.classList.add("dashboard");
+      const hero = node("div", undefined, "hero");
+      const heroContent = node("div");
+      heroContent.append(
+        node("div", "RECONX / FIELD INTELLIGENCE", "hero-kicker"),
+      );
+      heroContent.append(
+        overview.querySelector("h1"),
+        overview.querySelector(".intro"),
+      );
+      const meta = node("div", undefined, "hero-meta");
+      meta.append(
+        node("span", "🎯 " + (arr(SCAN_DATA.targets).join(" · ") || D.scan_id)),
+        node("span", "⏱️ " + (D.duration || "Not recorded")),
+        node("span", "🔒 Local evidence"),
+      );
+      heroContent.append(meta);
+      const seal = node("div", undefined, "hero-seal");
+      seal.setAttribute("aria-hidden", "true");
+      seal.append(node("span", "🛰️"), node("small", "SURFACE INTELLIGENCE"));
+      hero.append(heroContent, seal);
+      overview.prepend(hero);
       overview.append(banner);
       const cards = node("div", undefined, "cards");
       for (const [id, label, count, note] of [
         ["assets", "Discovered assets", assets.size, "Connected host profiles"],
         [
           "hosts",
-          "Live HTTP endpoints",
-          arr(D.hosts).length,
-          "HTTP and HTTPS counted separately",
+          "Live HTTP seeds",
+          liveRows.length,
+          "2xx–4xx except 429; not all successful",
         ],
         [
           "urls",
@@ -1563,31 +2613,162 @@
           "Masked values; manual review",
         ],
         [
-          "coverage",
-          "Coverage notes",
-          arr(D.coverage).length,
-          "Limits, exclusions and failures",
+          "unavailable",
+          "Unavailable services",
+          httpCounts.unavailable,
+          "5xx responses · excluded from live",
         ],
       ]) {
         const c = node("div", undefined, "card");
         c.tabIndex = 0;
         c.setAttribute("role", "button");
+        c.dataset.metric = id;
+        const cardTop = node("div", undefined, "card-top");
+        const icon = node(
+          "span",
+          id === "unavailable" ? "🚧" : icons[id],
+          "metric-icon",
+        );
+        icon.setAttribute("aria-hidden", "true");
+        cardTop.append(icon, node("span", "↗", "metric-arrow"));
         c.append(
+          cardTop,
           node("div", label, "label"),
           node("div", fmt(count), "number"),
           node("div", note, "note"),
         );
-        c.onclick = () => show(id);
+        c.onclick = () =>
+          id === "unavailable"
+            ? setHTTPView("unavailable")
+            : id === "hosts"
+              ? setHTTPView("live")
+              : show(id);
         c.onkeydown = (e) => {
-          if (e.key === "Enter") show(id);
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            c.click();
+          }
         };
         cards.append(c);
       }
       overview.append(cards);
+      const insightGrid = node("div", undefined, "grid insight-grid");
+      const health = node("div", undefined, "panel health-panel");
+      const healthHead = node("div", undefined, "panel-heading");
+      healthHead.append(
+        node("h2", "💓 HTTP response landscape"),
+        pill(fmt(httpRows.length) + " observed"),
+      );
+      health.append(
+        healthHead,
+        node(
+          "p",
+          "Availability at observation time. A response is evidence, not a health check.",
+          "muted panel-note",
+        ),
+      );
+      const healthBody = node("div", undefined, "health-body");
+      const ring = node("div", undefined, "health-ring");
+      let cursor = 0;
+      const stops = httpGroups
+        .filter(([key]) => httpCounts[key])
+        .map(([key, , , color]) => {
+          const from = cursor;
+          cursor += (httpCounts[key] / Math.max(1, httpRows.length)) * 100;
+          return `${color} ${from}% ${cursor}%`;
+        });
+      ring.style.background = stops.length
+        ? `conic-gradient(${stops.join(",")})`
+        : "var(--line)";
+      ring.setAttribute("role", "img");
+      ring.setAttribute(
+        "aria-label",
+        httpGroups
+          .map(([key, , label]) => `${label}: ${httpCounts[key]}`)
+          .join(", "),
+      );
+      const center = node("div", undefined, "ring-center");
+      center.append(
+        node("strong", fmt(liveRows.length)),
+        node("span", "LIVE SEEDS"),
+      );
+      ring.append(center);
+      const legend = node("div", undefined, "health-legend");
+      for (const [key, icon, label, color] of httpGroups) {
+        const b = node("button", undefined, "legend-row");
+        const dot = node("i", undefined, "legend-dot");
+        dot.style.background = color;
+        b.append(
+          dot,
+          node("span", icon + " " + label),
+          node("strong", fmt(httpCounts[key])),
+        );
+        b.onclick = () => setHTTPView("all", key);
+        legend.append(b);
+      }
+      healthBody.append(ring, legend);
+      health.append(healthBody);
+      const review = node("div", undefined, "panel review-panel");
+      review.append(
+        node("h2", "🎯 Start your review"),
+        node(
+          "p",
+          "Collected leads, ready for a closer look.",
+          "muted panel-note",
+        ),
+      );
+      const highFindings = arr(D.findings).filter((f) =>
+        ["critical", "high"].includes(String(f.severity).toLowerCase()),
+      );
+      for (const [id, icon, label, count, note] of [
+        [
+          "findings",
+          "🎯",
+          "High / critical matches",
+          highFindings.length,
+          "Scanner matches still need impact validation",
+        ],
+        [
+          "secrets",
+          "🔑",
+          "Secret candidates",
+          arr(D.secrets).length,
+          "Masked evidence with local review notes",
+        ],
+        [
+          "unavailable",
+          "🚧",
+          "Unavailable services",
+          httpCounts.unavailable,
+          "Retained as evidence; excluded from live seeds",
+        ],
+        [
+          "coverage",
+          "🧭",
+          "Incomplete phases",
+          incomplete.length,
+          "Check source budgets and partial coverage",
+        ],
+      ]) {
+        const b = node("button", undefined, "review-row");
+        const text = node("div");
+        text.append(node("strong", label), node("small", note));
+        b.append(
+          node("span", icon, "review-icon"),
+          text,
+          node("b", fmt(count)),
+          node("span", "→"),
+        );
+        b.onclick = () =>
+          id === "unavailable" ? setHTTPView("unavailable") : show(id);
+        review.append(b);
+      }
+      insightGrid.append(health, review);
+      overview.append(insightGrid);
       const grid = node("div", undefined, "grid"),
         phases = node("div", undefined, "panel"),
         sources = node("div", undefined, "panel");
-      phases.append(node("h2", "Execution & coverage"));
+      phases.append(node("h2", "🧭 Execution & coverage"));
       if (!phaseRows.length)
         phases.append(
           node(
@@ -1598,10 +2779,13 @@
         );
       phaseRows.forEach((p) => {
         const row = node("div", undefined, "row");
-        row.append(node("span", p.name), pill(p.status));
+        const label = node("div", undefined, "phase-label");
+        label.append(node("span", p.name));
+        if (p.reason) label.append(node("small", p.reason, "muted"));
+        row.append(label, pill(p.status));
         phases.append(row);
       });
-      sources.append(node("h2", "Discovery sources"));
+      sources.append(node("h2", "📊 Discovery sources"));
       const sourceCounts = new Map();
       arr(D.subdomain_sources).forEach((s) =>
         sourceCounts.set(

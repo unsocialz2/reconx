@@ -161,3 +161,11 @@ Compare it with an earlier saved checkpoint:
 ```
 
 The comparison uses **added** and **unobserved**, not "removed": skipped or partial checks cannot establish that an asset disappeared. Review scope and coverage on both scans.
+
+### HTTP availability in reports
+
+Reports separate HTTP observations from live discovery seeds. `2xx` is **available**, `3xx` a **redirect**, `401/403` **restricted**, other `4xx` a **client error**, `429` **rate limited**, and `5xx` (including `503`) **unavailable**. Missing or invalid status codes are **unknown**. A response can come from an edge proxy/WAF and does not establish origin health.
+
+`alive.txt` and live-seed counts exclude `5xx`, `429`, and unknown statuses. All observations remain in the checkpoint and report; `http_responded.txt`, `http_unavailable.txt`, and `http_rate_limited.txt` preserve separate endpoint lists. Active host discovery uses live seeds, while passive URL archives can still discover historical URLs for unavailable hosts. Independently collected URLs and JS files remain evidence and may still be processed by later phases.
+
+The offline report includes emoji navigation, light/dark themes, HTTP availability charts, clickable counts, live/unavailable/rate-limit filters, and local review notes. To upgrade an existing report without rescanning, rebuild the CLI, then run `reconx --report-only PATH_TO_SCAN_DIRECTORY`. Classification is recomputed from saved status codes; no network recheck is implied.

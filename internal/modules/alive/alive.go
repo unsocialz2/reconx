@@ -187,10 +187,12 @@ func (m *Module) runHttpx(ctx context.Context, subs []string, path string, tcfg 
 			}
 			m.store.AddHost(host)
 			mu.Lock()
-			liveCount++
+			if host.IsLive() {
+				liveCount++
+			}
 			mu.Unlock()
 			board.Update("httpx", liveCount)
-			m.log.LiveHost(host.Domain, host.StatusCode, host.Title, host.Server)
+			m.logHTTPObservation(host)
 		}),
 	)
 
@@ -199,7 +201,7 @@ func (m *Module) runHttpx(ctx context.Context, subs []string, path string, tcfg 
 	if r.IsTimeout() {
 		board.Timeout("httpx", liveCount)
 		m.log.ToolTimeout("httpx", liveCount, time.Duration(tcfg.Timeout)*time.Second)
-	} else if r.Err != nil && liveCount == 0 {
+	} else if r.Err != nil && len(m.store.GetHosts()) == 0 {
 		// httpx exits non-zero when 0 hosts respond — check stderr for real errors
 		m.log.ToolError("httpx", fmt.Errorf("%s", r.DiagString()), r.Stderr)
 		m.log.Warn("httpx returned 0 live hosts — possible issues:")
@@ -277,7 +279,7 @@ func (m *Module) probeEndpoints(ctx context.Context, endpoints []string) error {
 			h := &store.Host{Domain: u.Hostname(), Port: port, StatusCode: resp.StatusCode, Server: resp.Header.Get("Server"), Meta: map[string]string{"url": raw}}
 			tagHost(h)
 			m.store.AddHost(h)
-			m.log.LiveHost(h.Domain, h.StatusCode, "", h.Server)
+			m.logHTTPObservation(h)
 		}(raw)
 	}
 	wg.Wait()
@@ -305,11 +307,26 @@ func (m *Module) ProbePorts(ctx context.Context) error {
 func (m *Module) saveAlive() error {
 	hosts := m.store.GetHosts()
 	lines := make([]string, 0, len(hosts))
+	var observed, unavailable, limited []string
 	for _, h := range hosts {
-		if url, ok := h.Meta["url"]; ok {
-			lines = append(lines, url)
-		} else {
-			lines = append(lines, "https://"+h.Domain)
+		raw := h.Meta["url"]
+		if raw == "" {
+			raw = "https://" + h.Domain
+		}
+		observed = append(observed, raw)
+		if h.IsLive() {
+			lines = append(lines, raw)
+		}
+		if store.HTTPState(h.StatusCode) == "unavailable" {
+			unavailable = append(unavailable, raw)
+		}
+		if h.StatusCode == 429 {
+			limited = append(limited, raw)
+		}
+	}
+	for name, values := range map[string][]string{"http_responded.txt": observed, "http_unavailable.txt": unavailable, "http_rate_limited.txt": limited} {
+		if err := store.SaveRaw(m.outDir+"/"+name, values); err != nil {
+			return err
 		}
 	}
 	if err := store.SaveRaw(m.outDir+"/alive.txt", lines); err != nil {
@@ -317,7 +334,16 @@ func (m *Module) saveAlive() error {
 		return err
 	}
 	m.log.Debug("Saved alive.txt (%d entries)", len(lines))
+	m.log.Info("HTTP observations: %d | live seeds: %d | unavailable (5xx): %d | rate limited (429): %d", len(observed), len(lines), len(unavailable), len(limited))
 	return nil
+}
+
+func (m *Module) logHTTPObservation(h *store.Host) {
+	if h.IsLive() {
+		m.log.LiveHost(h.Domain, h.StatusCode, h.Title, h.Server)
+	} else {
+		m.log.Debug("HTTP observed: %s [%d] %s — excluded from live seeds", h.Domain, h.StatusCode, store.HTTPState(h.StatusCode))
+	}
 }
 
 // saveAliveWAFSplit writes live_waf.txt and live_nowaf.txt after WAF detection.

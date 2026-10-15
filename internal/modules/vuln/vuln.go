@@ -34,7 +34,7 @@ func (m *Module) Run(ctx context.Context) error {
 		"nuclei templates: exposures, CVEs, misconfigs, takeovers, default-logins")
 
 	start := time.Now()
-	hosts := m.store.GetHosts()
+	hosts := m.store.GetLiveHosts()
 	if len(hosts) == 0 {
 		m.log.Warn("No live hosts to scan — vuln scanning skipped")
 		return nil

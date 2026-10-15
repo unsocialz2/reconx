@@ -32,7 +32,7 @@ func New(cfg *config.Config, st *store.Store, log *logger.Logger, outDir string)
 func (m *Module) Run(ctx context.Context) error {
 	m.log.Phase("Screenshots", "gowitness — capturing live host previews (per-domain folders)")
 
-	hosts := m.store.GetHosts()
+	hosts := m.store.GetLiveHosts()
 	if len(hosts) == 0 {
 		m.log.Warn("No live hosts to screenshot")
 		return nil

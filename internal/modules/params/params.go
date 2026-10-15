@@ -44,7 +44,7 @@ func (m *Module) Run(ctx context.Context) error {
 	allURLs := m.store.GetURLs()
 	if len(allURLs) == 0 {
 		// Fallback to live hosts
-		for _, h := range m.store.GetHosts() {
+		for _, h := range m.store.GetLiveHosts() {
 			if u, ok := h.Meta["url"]; ok {
 				allURLs = append(allURLs, u)
 			} else {
@@ -692,7 +692,7 @@ func getJSFlagSupported(flag string) bool {
 // runGetJS runs getJS to find JS files from live hosts and extract endpoint URLs.
 func (m *Module) runGetJS(ctx context.Context, paramsDir string) {
 	var targetURLs []string
-	for _, h := range m.store.GetHosts() {
+	for _, h := range m.store.GetLiveHosts() {
 		if u, ok := h.Meta["url"]; ok && u != "" {
 			targetURLs = append(targetURLs, u)
 		} else {

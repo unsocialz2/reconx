@@ -214,6 +214,10 @@ func TestReportContainsAllResultsAndMasksEvidence(t *testing.T) {
 	st := store.New("v1.2-preview")
 	st.AddSubdomainFromSource("app.example.test", "subfinder")
 	st.AddHost(&store.Host{Domain: "app.example.test", StatusCode: 200, Title: "</script><img src=x onerror=alert(1)>", TechStack: []string{"React", "nginx"}, Meta: map[string]string{"url": "https://app.example.test"}})
+	for _, code := range []int{302, 401, 403, 404, 429, 500, 503, 0} {
+		host := fmt.Sprintf("status-%d.example.test", code)
+		st.AddHost(&store.Host{Domain: host, StatusCode: code, Meta: map[string]string{"url": "https://" + host}})
+	}
 	for i := 0; i < 6001; i++ {
 		st.AddURL(fmt.Sprintf("https://app.example.test/api/items/%d?record_id=%d", i, i))
 	}
@@ -237,6 +241,11 @@ func TestReportContainsAllResultsAndMasksEvidence(t *testing.T) {
 	var w workspace
 	if err := json.Unmarshal([]byte(html[start:end]), &w); err != nil {
 		t.Fatal(err)
+	}
+	for _, h := range w.Data.Hosts {
+		if h.HTTPState != store.HTTPState(h.StatusCode) {
+			t.Fatalf("missing availability: %+v", h)
+		}
 	}
 	if len(w.Data.URLs) != 6001 {
 		t.Fatalf("URLs=%d parameters=%d", len(w.Data.URLs), len(w.Parameters))
