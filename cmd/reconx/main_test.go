@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/unsocialz2/reconx/internal/config"
 	"github.com/unsocialz2/reconx/internal/store"
 	"os"
 	"path/filepath"
@@ -105,5 +106,36 @@ func TestReportOnlyDoesNotLaunchPipeline(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "reconx.log")); !os.IsNotExist(err) {
 		t.Fatal("report-only unexpectedly ran pipeline")
+	}
+}
+
+func TestScopePreviewDoesNotCreateScanOrProbeTools(t *testing.T) {
+	dir := t.TempDir()
+	scopePath := filepath.Join(dir, "scope.csv")
+	if err := os.WriteFile(scopePath, []byte("asset_identifier,eligible_for_submission\n*.example.test,true\nadmin.example.test,false\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(dir, "no-scan")
+	if err := run([]string{"--scope-csv", scopePath, "--scope-preview", "--output", output}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(output); !os.IsNotExist(err) {
+		t.Fatal("preview created scan output")
+	}
+}
+func TestDoctorNeverInvokesDisabledScanners(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "scanner-was-started")
+	binary := filepath.Join(dir, "nuclei")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\ntouch '"+marker+"'\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.DefaultConfig()
+	cfg.Tools = map[string]config.ToolConfig{"nuclei": {Enabled: true, Path: binary}, "naabu": {Enabled: true, Path: binary}}
+	if err := doctor(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("disabled scanner started")
 	}
 }

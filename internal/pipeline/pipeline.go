@@ -102,6 +102,9 @@ type Pipeline struct {
 // New creates a Pipeline and its output directory.
 // If cfg.ResumeDir is set, resumes from an existing scan directory.
 func New(cfg *config.Config) (*Pipeline, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	if cfg.Workers < 1 {
 		return nil, fmt.Errorf("workers must be positive")
 	}
@@ -123,8 +126,11 @@ func New(cfg *config.Config) (*Pipeline, error) {
 			cfg.Target = manifest.Target
 		}
 		// Restore recorded scope only if the caller did not supply replacement patterns.
-		if len(cfg.Scope.InScope)+len(cfg.Scope.OutOfScope) == 0 {
+		if len(cfg.Scope.InScope)+len(cfg.Scope.OutOfScope) == 0 && cfg.Scope.Imported == nil {
 			cfg.Scope = manifest.Scope
+		}
+		if err := cfg.Validate(); err != nil {
+			return nil, err
 		}
 		if manifest.Fingerprint != fingerprint(cfg) {
 			return nil, fmt.Errorf("resume target/scope/tool configuration changed; start a new scan")
@@ -147,6 +153,10 @@ func New(cfg *config.Config) (*Pipeline, error) {
 		manifest.Fingerprint = fingerprint(cfg)
 	}
 	log := logger.New(cfg.Output.Verbose, filepath.Join(outDir, "reconx.log"))
+	if err := scope.New(cfg).ValidateDiscoverySeeds(); err != nil {
+		log.Close()
+		return nil, err
+	}
 	p := &Pipeline{cfg: cfg, store: store.New(filepath.Base(outDir)), scope: scope.New(cfg), log: log, outDir: outDir, manifest: manifest}
 	if cfg.ResumeDir != "" {
 		st, err := store.LoadSnapshot(filepath.Join(outDir, "checkpoint.json"), p.scope.IsInScope)
@@ -215,6 +225,20 @@ func (p *Pipeline) Run(ctx context.Context) error {
 	p.log.Banner("v1.2.0")
 	p.log.Info("Scan ID: %s", p.store.ScanID)
 	p.log.Info("Output: %s", p.outDir)
+	p.log.Info("Scope: %d domain seeds, %d IP/ranges | ports=%t nuclei=%t", len(p.cfg.Target.Domains), len(p.cfg.Target.IPRanges), p.cfg.Phases.PortScan, p.cfg.Phases.VulnScan)
+	if imported := p.cfg.Scope.Imported; imported != nil {
+		allowed, excluded := 0, 0
+		for _, a := range imported.Assets {
+			if a.Excluded {
+				excluded++
+			} else {
+				allowed++
+			}
+		}
+		p.log.Info("Imported scope: %s | %d include, %d exclude, %d unsupported rows skipped", imported.Format, allowed, excluded, len(imported.Skipped))
+		p.log.Info("CSV boundaries: exact hosts, subdomains-only wildcards, scheme/port-specific HTTP origins; exclusions win")
+	}
+	p.log.Info("HTTP controls: %.2f requests/s per host (built-in), %d retries for GET/HEAD 429/503", p.cfg.HostRPS, p.cfg.HTTPRetries)
 	events, err := os.OpenFile(filepath.Join(p.outDir, "events.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		return err

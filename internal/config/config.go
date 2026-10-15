@@ -3,9 +3,11 @@ package config
 import (
 	"bufio"
 	"fmt"
+	"github.com/unsocialz2/reconx/pkg/httpcontrol"
 	"github.com/unsocialz2/reconx/pkg/runner"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,6 +23,7 @@ type Target struct {
 
 // Scope defines in-scope and out-of-scope patterns
 type Scope struct {
+	Imported   *ScopeImport `json:",omitempty"`
 	InScope    []string
 	OutOfScope []string
 }
@@ -68,6 +71,12 @@ type OutputConfig struct {
 
 // Config is the root configuration
 type Config struct {
+	httpMu         sync.Mutex
+	httpController *httpcontrol.Controller
+	HostRPS        float64
+	HTTPRetries    int
+	HTTPMaxBackoff int
+
 	ToolStatus      func(string, string) `json:"-"`
 	Target          Target
 	Scope           Scope
@@ -89,6 +98,7 @@ type Config struct {
 func DefaultConfig() *Config {
 	return &Config{
 		Workers: 10,
+		HostRPS: 2, HTTPRetries: 1, HTTPMaxBackoff: 30,
 		Phases: PhasesConfig{
 			SubdomainEnum: true,
 			AliveCheck:    true,
@@ -325,6 +335,13 @@ func WriteDefault(path string) error {
 # Load with:  reconx -d example.com --config reconx.ini
 # All values here can still be overridden by CLI flags.
 
+[runtime]
+workers = 10
+# Built-in HTTP per-host limit; native tool rate caps are per process.
+host_rps = 2
+http_retries = 1
+http_max_backoff = 30
+
 [output]
 output_dir       = ./reconx-output
 html_report      = true
@@ -536,6 +553,14 @@ func applyConfigValue(cfg *Config, section, key, value string) {
 		}
 	case "runtime":
 		switch key {
+		case "host_rps":
+			if _, err := fmt.Sscan(value, &cfg.HostRPS); err != nil {
+				cfg.HostRPS = -1
+			}
+		case "http_retries":
+			cfg.HTTPRetries = parseInt(value)
+		case "http_max_backoff":
+			cfg.HTTPMaxBackoff = parseInt(value)
 		case "workers":
 			cfg.Workers = parseInt(value)
 		case "header":
@@ -667,10 +692,28 @@ func (c *Config) RunnerPolicy() runner.Policy {
 	for key, t := range c.Tools {
 		tools[key] = runner.ToolPolicy{Enabled: t.Enabled, Path: t.Path, Flags: t.Flags, Timeout: time.Duration(t.Timeout) * time.Second, RateLimit: t.RateLimit}
 	}
-	return runner.Policy{Tools: tools, Workers: c.Workers, NoTimeout: c.NoTimeout, Header: c.BugBountyHeader}
+	return runner.Policy{Tools: tools, Workers: c.Workers, NoTimeout: c.NoTimeout, Header: c.BugBountyHeader, RequestRate: max(1, int(c.HostRPS))}
 }
 
+func (c *Config) HTTPController() *httpcontrol.Controller {
+	c.httpMu.Lock()
+	defer c.httpMu.Unlock()
+	if c.httpController == nil {
+		c.httpController = httpcontrol.New()
+	}
+	return c.httpController
+}
 func (c *Config) Validate() error {
+	if c.Phases.PortScan && c.Scope.Imported != nil {
+		for _, a := range c.Scope.Imported.Assets {
+			if a.Kind == "origin" && !a.Excluded {
+				return fmt.Errorf("origin-specific CSV scope cannot authorize raw port scanning; keep --ports disabled")
+			}
+		}
+	}
+	if !(c.HostRPS > 0 && c.HostRPS <= 1000) || c.HTTPRetries < 0 || c.HTTPRetries > 3 || c.HTTPMaxBackoff < 1 || c.HTTPMaxBackoff > 300 {
+		return fmt.Errorf("host-rps must be >0 and <=1000; http-retries 0–3; http-max-backoff 1–300 seconds")
+	}
 	if c.Workers < 1 || c.Workers > 256 {
 		return fmt.Errorf("workers must be between 1 and 256")
 	}

@@ -136,7 +136,7 @@ MIT — see [LICENSE](LICENSE). Use only within an authorized assessment scope.
 ## Version 1.2 workflow
 
 - Recon profiles: `--profile quick|standard|deep|custom`. Quick limits source budgets and disables the slow Amass/Gospider/Hakrawler/ParamSpider adapters. Deep extends total recon budgets. Profiles never enable ports or Nuclei. Explicit INI settings override profile defaults; explicit CLI phase switches override INI settings.
-- Read-only preflight: `./reconx --doctor` prints resolved tool paths, availability, worker settings and optional scanner state. It does not scan a target or prove provider/binary compatibility.
+- Read-only preflight: `./reconx --doctor` prints resolved tool paths, availability, worker settings and optional scanner state. It also runs bounded local help/version checks for supported adapters; it does not scan targets or prove provider/API access.
 - HTTPx and supported stdin/file crawlers run in batches of 32 inputs. Successful batches are owner-private journal entries in `tasks/`; resume retries incomplete batches and restores successful parser output. `timeout` is the per-batch tool timeout; `total_timeout` bounds the source as a whole (HTTPx defaults to 60 minutes, supported URL sources to 30). This hard source budget still applies under `--no-timeout`.
 - WAF checks use bounded per-host jobs (45 seconds maximum per host), a 30-minute total default budget, and preserve completed host results. Untested or failed hosts remain unknown.
 - Amass retains partial output; completed domain results are reused on resume. The default collection timeout is 30 minutes. Remote provider limits and tool deadlines can still leave partial coverage: these are reported, never re-labelled as complete.
@@ -169,3 +169,22 @@ Reports separate HTTP observations from live discovery seeds. `2xx` is **availab
 `alive.txt` and live-seed counts exclude `5xx`, `429`, and unknown statuses. All observations remain in the checkpoint and report; `http_responded.txt`, `http_unavailable.txt`, and `http_rate_limited.txt` preserve separate endpoint lists. Active host discovery uses live seeds, while passive URL archives can still discover historical URLs for unavailable hosts. Independently collected URLs and JS files remain evidence and may still be processed by later phases.
 
 The offline report includes emoji navigation, light/dark themes, HTTP availability charts, clickable counts, live/unavailable/rate-limit filters, and local review notes. To upgrade an existing report without rescanning, rebuild the CLI, then run `reconx --report-only PATH_TO_SCAN_DIRECTORY`. Classification is recomputed from saved status codes; no network recheck is implied.
+
+### Scope CSV, traffic controls and tool preflight
+
+```bash
+# Inspect scope without network requests or scan output:
+./reconx --scope-csv scope.csv --scope-preview
+# Check installed tools using bounded local help/version probes:
+./reconx --scope-csv scope.csv --doctor
+# Scan the imported targets (ports/Nuclei remain disabled):
+./reconx --scope-csv scope.csv --host-rps 2 --http-retries 1
+```
+
+HackerOne scope CSV uses `asset_identifier`, optional `asset_type`, and **`eligible_for_submission`**. `eligible_for_bounty=false` does not exclude a VDP asset. Normalized Bugcrowd target-group CSV uses `target` (or `url`), optional `category`, and **`in_scope`**. Eligibility must be explicit; unknown or conflicting values stop the import. Arbitrary submission CSV exports are not scope exports. Unsupported mobile/source/hardware rows are listed in the preview, not converted to web targets. Program instructions are retained for manual review; free text does not enable scanners or override structured exclusions.
+
+Imported bare hosts match exactly; `*.example.com` matches subdomains and **does not include the apex**. IPs/CIDRs retain network boundaries. Root HTTP URLs retain exact scheme/host/port. Path/query-specific URLs stop the import because encrypted subprocess tunnels cannot enforce path restrictions. Imported origins cannot be combined with raw port scanning. Exclusions win; existing text/INI scope can further narrow the CSV. Legacy `--scope` domain-tree semantics are unchanged. With no explicit `-d`/`--ip`, seeds are derived from the imported assets; explicit targets select a subset and are checked against the CSV. Wildcard base names are discovery seeds only. Review scope before running; DNS enumeration can discover excluded names, which are filtered from HTTP target lists.
+
+Built-in scoped HTTP clients share a per-host limiter across modules, schemes and ports. Defaults: `--host-rps 2`, `--http-retries 1`, `--http-max-backoff 30`. Only replayable GET/HEAD requests retry on 429/503. Numeric/date `Retry-After` is honored; a delay beyond the automatic retry budget returns the original response and defers further requests to that host. Cancellation and client/phase deadlines still apply. Plain HTTP through the scan proxy uses these controls too. HTTPS subprocess traffic remains encrypted: native rate flags are applied per process where supported, **not a universal per-host request/response governor**. Native tools use an integer rate (minimum 1); sub-1 rates apply only to built-in HTTP. Tool-specific configured rates can lower this cap, not raise it. Providers and tools that do not use the scoped HTTP transport retain their own rate behavior. Conservative limits can increase scan duration; partial coverage is still retained when phase budgets expire.
+
+INI equivalents live under `[runtime]`: `host_rps`, `http_retries`, `http_max_backoff`. `--doctor` checks listed adapter flags plus effective custom flags and reports `compatible`, `incompatible`, `check_failed` or `not_checked`. Missing optional tools remain skipped. Enabled, available tools with incompatible flags or failed probes produce a nonzero exit. Disabled ports/Nuclei binaries are never probed. Each probe has a two-second hard limit with a 15-second overall preflight budget; no target URLs are supplied. Help compatibility is not a provider/API access test.

@@ -20,12 +20,13 @@ type ToolPolicy struct {
 	RateLimit int
 }
 type Policy struct {
-	Tools     map[string]ToolPolicy
-	Workers   int
-	NoTimeout bool
-	Header    string
-	ProxyURL  string
-	slots     chan struct{}
+	RequestRate int
+	Tools       map[string]ToolPolicy
+	Workers     int
+	NoTimeout   bool
+	Header      string
+	ProxyURL    string
+	slots       chan struct{}
 }
 type policyKey struct{}
 type observerKey struct{}
@@ -127,8 +128,12 @@ func policyArgs(key string, args []string, p *Policy, t ToolPolicy) []string {
 		return out
 	}
 	args = MergeFlags(normalize(args), normalize(t.Flags))
-	if t.RateLimit > 0 {
-		rate := strconv.Itoa(t.RateLimit)
+	rateLimit := t.RateLimit
+	if p.RequestRate > 0 && (rateLimit == 0 || rateLimit > p.RequestRate) {
+		rateLimit = p.RequestRate
+	}
+	if rateLimit > 0 {
+		rate := strconv.Itoa(rateLimit)
 		switch key {
 		case "httpx", "nuclei":
 			args = MergeFlags(args, []string{"-rate-limit", rate})

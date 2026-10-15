@@ -141,4 +141,4 @@ Only enable execution when the target program permits it: `--ports` and `--nucle
 
 After upgrading, `./reconx --version` should print `v1.2.0`. A binary built before the Mantra worker fix can still emit `-threads`; rebuild or rerun the installer. Version 1.2 also migrates legacy Mantra/Naabu thread aliases in custom flags.
 
-Use `./reconx --doctor` for a read-only tool/settings inventory. For a new HTML report from an old run, use `--report-only PATH`; this does not scan again.
+Use `./reconx --doctor` for a local tool/settings inventory and bounded help/version compatibility checks. Use `--scope-csv scope.csv --scope-preview` to inspect imported scope without any network requests. For a new HTML report from an old run, use `--report-only PATH`; this does not scan again.

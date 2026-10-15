@@ -3,6 +3,8 @@ package scope
 import (
 	"fmt"
 	"github.com/unsocialz2/reconx/internal/config"
+	"github.com/unsocialz2/reconx/pkg/httpcontrol"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -41,6 +43,23 @@ func (f *Filter) IsInScope(value string) bool {
 	for _, p := range f.cfg.Scope.OutOfScope {
 		if matchPattern(host, strings.ToLower(strings.TrimSpace(p))) {
 			return false
+		}
+	}
+	if imported := f.cfg.Scope.Imported; imported != nil {
+		allowed := false
+		for _, asset := range imported.Assets {
+			if matchAsset(value, host, asset) {
+				if asset.Excluded {
+					return false
+				}
+				allowed = true
+			}
+		}
+		if !allowed {
+			return false
+		}
+		if len(f.cfg.Scope.InScope) == 0 {
+			return true
 		}
 	}
 	if len(f.cfg.Scope.InScope) > 0 {
@@ -118,5 +137,126 @@ func (t scopedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if (req.URL.Scheme != "http" && req.URL.Scheme != "https") || !t.filter.IsInScope(req.URL.String()) {
 		return nil, fmt.Errorf("request outside scope: %s", req.URL.Host)
 	}
-	return t.base.RoundTrip(req)
+	controller := t.filter.cfg.HTTPController()
+	cfg := t.filter.cfg
+	host := strings.ToLower(req.URL.Hostname())
+	replayable := (req.Method == http.MethodGet || req.Method == http.MethodHead) && (req.Body == nil || req.Body == http.NoBody || req.GetBody != nil)
+	current := req
+	for attempt := 0; ; attempt++ {
+		if err := controller.Wait(req.Context(), host, cfg.HostRPS); err != nil {
+			return nil, err
+		}
+		response, err := t.base.RoundTrip(current)
+		if err != nil || response == nil {
+			return response, err
+		}
+		if response.StatusCode != 429 && response.StatusCode != 503 {
+			return response, nil
+		}
+		maxBackoff := time.Duration(cfg.HTTPMaxBackoff) * time.Second
+		delay := httpcontrol.RetryDelay(response.Header.Get("Retry-After"), attempt, time.Now(), maxBackoff)
+		controller.Cooldown(host, delay)
+		deadline, hasDeadline := req.Context().Deadline()
+		if !replayable || attempt >= cfg.HTTPRetries || delay > maxBackoff || (hasDeadline && time.Until(deadline) <= delay) {
+			return response, nil
+		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+		response.Body.Close()
+		current = req.Clone(req.Context())
+		if req.GetBody != nil {
+			current.Body, err = req.GetBody()
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+}
+
+// Imported assets use exact semantics, unlike legacy domain-tree text rules.
+func matchAsset(value, host string, a config.ScopeAsset) bool {
+	switch a.Kind {
+	case "cidr":
+		return ipInCIDR(host, a.Host)
+	case "wildcard":
+		return host != a.Host && strings.HasSuffix(host, "."+a.Host)
+	case "host", "ip":
+		return host == a.Host
+	case "origin":
+		if host != a.Host {
+			return false
+		}
+		if strings.Contains(value, "://") {
+			u, err := url.Parse(value)
+			if err != nil {
+				return false
+			}
+			port := u.Port()
+			if port == "" {
+				if u.Scheme == "https" {
+					port = "443"
+				} else if u.Scheme == "http" {
+					port = "80"
+				}
+			}
+			return u.Scheme == a.Scheme && port == a.Port
+		}
+		if a.Excluded {
+			return false
+		}
+		// Bare names are discovery candidates, not authorization for every origin.
+		u, err := url.Parse("//" + value)
+		return err == nil && (u.Port() == "" || u.Port() == a.Port)
+	}
+	return false
+}
+
+// ValidateDiscoverySeeds prevents explicit selections outside an imported CSV
+// from starting enumeration. Wildcard base names are passive discovery seeds,
+// not HTTP authorization for the apex itself.
+func (f *Filter) ValidateDiscoverySeeds() error {
+	imported := f.cfg.Scope.Imported
+	if imported == nil {
+		return nil
+	}
+	for _, domain := range f.cfg.Target.Domains {
+		allowed := f.IsInScope(domain)
+		for _, a := range imported.Assets {
+			if !a.Excluded && a.Kind == "wildcard" && a.Host == domain {
+				allowed = true
+			}
+		}
+		if !allowed {
+			return fmt.Errorf("domain seed %s is outside imported scope", domain)
+		}
+	}
+	for _, raw := range f.cfg.Target.IPRanges {
+		ip, network, err := net.ParseCIDR(raw)
+		if err != nil {
+			if !f.IsInScope(raw) {
+				return fmt.Errorf("IP seed %s is outside imported scope", raw)
+			}
+			continue
+		}
+		ip = ip.Mask(network.Mask)
+		last := append(net.IP(nil), ip...)
+		for i := range last {
+			last[i] |= ^network.Mask[i]
+		}
+		allowed := false
+		for _, a := range imported.Assets {
+			if a.Excluded {
+				continue
+			}
+			if a.Kind == "cidr" && ipInCIDR(ip.String(), a.Host) && ipInCIDR(last.String(), a.Host) {
+				allowed = true
+			}
+			if a.Kind == "ip" && ip.Equal(last) && ip.String() == a.Host {
+				allowed = true
+			}
+		}
+		if !allowed {
+			return fmt.Errorf("IP range seed %s is not contained in an imported allowed network", raw)
+		}
+	}
+	return nil
 }

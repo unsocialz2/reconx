@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/unsocialz2/reconx/internal/modules/report"
+	"github.com/unsocialz2/reconx/internal/scope"
 	"github.com/unsocialz2/reconx/internal/store"
 	"net"
 	"os"
@@ -65,7 +66,8 @@ func run(args []string) error {
 	}
 	fs := flag.NewFlagSet("reconx", flag.ContinueOnError)
 	var domains, ips, asns, cloudAssets listFlag
-	var configPath, scopePath, reportDir, previousDir string
+	var configPath, scopePath, scopeCSV, reportDir, previousDir string
+	var scopePreview bool
 	var initConfig, showVersion, showDoctor bool
 	fs.Var(&domains, "d", "Authorized domain (repeatable)")
 	fs.Var(&ips, "ip", "Authorized IP or CIDR (repeatable)")
@@ -77,6 +79,8 @@ func run(args []string) error {
 	fs.StringVar(&reportDir, "report-only", "", "Rebuild HTML from an existing checkpoint without scanning")
 	fs.StringVar(&configPath, "config", "", "INI configuration path")
 	fs.StringVar(&scopePath, "scope", "", "Scope include/exclude file")
+	fs.StringVar(&scopeCSV, "scope-csv", "", "Import structured scope CSV (HackerOne or target/in_scope columns)")
+	fs.BoolVar(&scopePreview, "scope-preview", false, "Print effective target/scope JSON and exit without network requests")
 	fs.StringVar(&cfg.Target.OrgName, "org", cfg.Target.OrgName, "Explicit GitHub organization")
 	fs.StringVar(&cfg.Output.OutputDir, "output", cfg.Output.OutputDir, "Output directory")
 	fs.StringVar(&cfg.ResumeDir, "resume", "", "Resume a scan with the same target/scope")
@@ -84,6 +88,9 @@ func run(args []string) error {
 	fs.StringVar(&cfg.WordlistPath, "wordlist", cfg.WordlistPath, "DNS wordlist")
 	fs.StringVar(&cfg.ResolversPath, "resolvers", cfg.ResolversPath, "DNS resolvers file")
 	fs.IntVar(&cfg.Workers, "workers", cfg.Workers, "Maximum concurrent subprocesses/requests")
+	fs.Float64Var(&cfg.HostRPS, "host-rps", cfg.HostRPS, "Built-in HTTP requests/second per host; native tool rate cap where supported")
+	fs.IntVar(&cfg.HTTPRetries, "http-retries", cfg.HTTPRetries, "Built-in GET/HEAD retries for 429/503 (0–3)")
+	fs.IntVar(&cfg.HTTPMaxBackoff, "http-max-backoff", cfg.HTTPMaxBackoff, "Maximum automatic retry wait in seconds; longer Retry-After defers host")
 	fs.BoolVar(&cfg.Output.Verbose, "verbose", cfg.Output.Verbose, "Verbose logs")
 	fs.BoolVar(&cfg.NoTimeout, "no-timeout", cfg.NoTimeout, "Disable soft tool timeouts")
 	fs.BoolVar(&cfg.Output.HTMLReport, "html-report", cfg.Output.HTMLReport, "Write HTML report")
@@ -158,9 +165,6 @@ func run(args []string) error {
 			*skips[name] = !*value
 		}
 	}
-	if showDoctor {
-		return doctor(cfg)
-	}
 	for key, value := range tokenValues {
 		cfg.Tokens[key] = *value
 	}
@@ -198,6 +202,23 @@ func run(args []string) error {
 			return err
 		}
 	}
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	if scopeCSV != "" {
+		if err := cfg.LoadScopeCSV(scopeCSV); err != nil {
+			return err
+		}
+	}
+	if err := scope.New(cfg).ValidateDiscoverySeeds(); err != nil {
+		return err
+	}
+	if scopePreview {
+		return printScope(cfg)
+	}
+	if showDoctor {
+		return doctor(cfg)
+	}
 	if len(cfg.Target.Domains)+len(cfg.Target.IPRanges)+len(cfg.Target.ASNs) == 0 && cfg.ResumeDir == "" {
 		return fmt.Errorf("provide -d, --ip, --asn, or --resume")
 	}
@@ -213,3 +234,19 @@ func run(args []string) error {
 var domainPattern = regexp.MustCompile(`^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 
 func validDomain(value string) bool { return len(value) <= 253 && domainPattern.MatchString(value) }
+
+func printScope(cfg *config.Config) error {
+	payload := struct {
+		Targets config.Target `json:"targets"`
+		Scope   config.Scope  `json:"scope"`
+		Ports   bool          `json:"ports_enabled"`
+		Nuclei  bool          `json:"nuclei_enabled"`
+		Notes   []string      `json:"notes"`
+	}{cfg.Target, cfg.Scope, cfg.Phases.PortScan, cfg.Phases.VulnScan, []string{"Exclusions win. Imported bare hosts are exact; *.example.com includes subdomains only. HTTP origins retain scheme and port. Free-text program instructions are preserved for manual review, not interpreted as permissions."}}
+	raw, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(raw))
+	return nil
+}

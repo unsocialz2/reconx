@@ -26,6 +26,10 @@ func (f *Filter) StartProxy(ctx context.Context) (string, func(), error) {
 			return
 		}
 		if r.Method == http.MethodConnect {
+			if !f.IsInScope("https://" + r.Host) {
+				http.Error(w, "origin outside scan scope", http.StatusForbidden)
+				return
+			}
 			dest := r.Host
 			if _, _, err := net.SplitHostPort(dest); err != nil {
 				http.Error(w, "CONNECT requires host:port", 400)
@@ -75,7 +79,7 @@ func (f *Filter) StartProxy(ctx context.Context) (string, func(), error) {
 		r.RequestURI = ""
 		r.Header.Del("Proxy-Authorization")
 		r.Header.Del("Proxy-Connection")
-		response, err := transport.RoundTrip(r)
+		response, err := (scopedTransport{f, transport}).RoundTrip(r)
 		if err != nil {
 			http.Error(w, "upstream unavailable", 502)
 			return
