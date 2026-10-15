@@ -56,7 +56,8 @@ LOG_FILE="$STATE_DIR/install.log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 trap 'code=$?; printf "\nInstallation failed at line %s (exit %s). Log: %s\n" "$LINENO" "$code" "$LOG_FILE"; exit "$code"' ERR
 WORK_DIR="$(mktemp -d)"
-trap 'rm -rf "$WORK_DIR"' EXIT
+STAGED_BINARIES=()
+trap 'rm -rf "$WORK_DIR"; for staged in "${STAGED_BINARIES[@]}"; do rm -f "$staged"; done' EXIT
 step() { printf '\n== %s ==\n' "$*"; }
 need() { command -v "$1" >/dev/null 2>&1 || { printf 'Missing prerequisite: %s\n' "$1" >&2; return 1; }; }
 fetch() { curl --fail --location --retry 3 --connect-timeout 15 --max-time 300 --silent --show-error "$1" -o "$2"; }
@@ -148,11 +149,29 @@ export PATH="$(dirname "$GO_BIN"):$TOOLS_DIR:$INSTALL_DIR:$PATH"
 
 step 'Build and install ReconX'
 cd "$ROOT_DIR"
-"$GO_BIN" build -trimpath -o "$ROOT_DIR/reconx" ./cmd/reconx
-# Keep the repository-local binary for the dashboard and install a user-facing copy.
-if [[ "$INSTALL_DIR/reconx" != "$ROOT_DIR/reconx" ]]; then cp "$ROOT_DIR/reconx" "$INSTALL_DIR/reconx"; fi
-"$ROOT_DIR/reconx" --version
-"$ROOT_DIR/reconx" --help > "$WORK_DIR/reconx-help.txt" 2>&1
+# Never build over an existing download, wrapper, or running executable.
+# Check both destinations first; mv would otherwise move a binary INTO a directory.
+for destination in "$ROOT_DIR/reconx" "$INSTALL_DIR/reconx"; do
+  if [[ -d "$destination" ]]; then
+    printf 'Cannot install binary: %s is a directory. Move that directory aside and rerun.\n' "$destination" >&2
+    exit 1
+  fi
+done
+"$GO_BIN" build -trimpath -o "$WORK_DIR/reconx" ./cmd/reconx
+chmod 755 "$WORK_DIR/reconx"
+"$WORK_DIR/reconx" --version
+"$WORK_DIR/reconx" --help > "$WORK_DIR/reconx-help.txt" 2>&1
+publish_binary() {
+  local destination="$1" staged
+  staged="$(mktemp "$(dirname "$destination")/.reconx-install.XXXXXX")"
+  STAGED_BINARIES+=("$staged")
+  cp "$WORK_DIR/reconx" "$staged"
+  chmod 755 "$staged"
+  # Rename in the destination filesystem; replace symlinks, never follow them.
+  mv -f "$staged" "$destination"
+}
+publish_binary "$ROOT_DIR/reconx"
+if [[ "$INSTALL_DIR/reconx" != "$ROOT_DIR/reconx" ]]; then publish_binary "$INSTALL_DIR/reconx"; fi
 
 if (( ! SKIP_TOOLS )); then
   step 'Pinned reconnaissance tools'

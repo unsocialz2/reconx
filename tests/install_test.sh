@@ -20,6 +20,9 @@ case "$1" in
    if [[ "$1" == -o ]]; then out="$2";break;fi
    shift
   done
+  [[ "${FAKE_BUILD_FAIL:-0}" != 1 ]] || exit 17
+  # Reproduce Go's refusal to overwrite an existing non-object file.
+  [[ ! -e "$out" ]] || { echo 'build output already exists and is not an object file' >&2; exit 1; }
   mkdir -p "$(dirname "$out")"
   cat > "$out" <<'CLI'
 #!/usr/bin/env bash
@@ -93,12 +96,40 @@ export RECONX_PROFILE_FILE="$FIXTURE/profile"
 export RECONX_GO="$FIXTURE/fake-bin/fake-go"
 
 # CLI-only setup must stay local, validate the smoke command, and add PATH exactly once.
+printf 'old downloaded wrapper\n' > "$FIXTURE/project/reconx"
+printf 'old user binary\n' > "$FIXTURE/bin-old"
+mkdir -p "$FIXTURE/bin"
+cp "$FIXTURE/bin-old" "$FIXTURE/bin/reconx"
+chmod 600 "$FIXTURE/project/reconx" "$FIXTURE/bin/reconx"
 for attempt in 1 2;do
  bash "$FIXTURE/project/install.sh" --skip-system-deps --skip-tools --cli-only --skip-checks > "$FIXTURE/setup-$attempt.log" 2>&1
 done
 [[ -x "$FIXTURE/bin/reconx" && -f "$FIXTURE/setup/install-receipt.txt" ]]
 [[ "$(grep -c '^\. ' "$FIXTURE/profile")" == 1 ]]
 [[ ! -e "$FIXTURE/bin/reconx-web" ]]
+
+# Failed builds retain both previous copies byte-for-byte.
+cp "$FIXTURE/project/reconx" "$FIXTURE/before-build"
+if FAKE_BUILD_FAIL=1 bash "$FIXTURE/project/install.sh" --binary-only > "$FIXTURE/build-failed.log" 2>&1;then echo 'Build failure accepted' >&2;exit 1;fi
+cmp "$FIXTURE/before-build" "$FIXTURE/project/reconx"
+cmp "$FIXTURE/before-build" "$FIXTURE/bin/reconx"
+
+# Replace a symlink itself without modifying its target, and restore executable mode.
+rm "$FIXTURE/bin/reconx"
+ln -s "$FIXTURE/bin-old" "$FIXTURE/bin/reconx"
+bash "$FIXTURE/project/install.sh" --binary-only > "$FIXTURE/replace-link.log" 2>&1
+[[ ! -L "$FIXTURE/bin/reconx" && -x "$FIXTURE/bin/reconx" && -x "$FIXTURE/project/reconx" ]]
+grep -qx 'old user binary' "$FIXTURE/bin-old"
+for destination in "$FIXTURE/project/reconx" "$FIXTURE/bin/reconx";do
+ mv "$destination" "$destination.saved"
+ mkdir "$destination"
+ printf 'keep\n' > "$destination/keep"
+ if bash "$FIXTURE/project/install.sh" --binary-only > "$FIXTURE/directory.log" 2>&1;then echo 'Directory destination accepted' >&2;exit 1;fi
+ grep -q 'is a directory' "$FIXTURE/directory.log"
+ [[ "$(ls -A "$destination")" == keep ]]
+ rm "$destination/keep";rmdir "$destination"
+ mv "$destination.saved" "$destination"
+done
 
 # Unknown options fail before installation; checksum failures never execute extracted Go.
 if bash "$FIXTURE/project/install.sh" --bad-option > "$FIXTURE/bad-option.log" 2>&1;then echo 'Unknown option accepted' >&2;exit 1;fi

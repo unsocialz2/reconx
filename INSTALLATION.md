@@ -72,6 +72,26 @@ cat ~/.config/reconx/install.log
 
 Fix the reported dependency/download problem and rerun `bash install.sh`. The installer saves runtime/build information in `~/.config/reconx/install-receipt.txt`.
 
+### Old binary or `--report-only` not recognized
+
+From the cloned repository, refresh just the CLI (existing Go required):
+
+```bash
+git pull --ff-only
+bash install.sh --binary-only
+./reconx --version
+```
+
+The installer builds and checks a fresh temporary executable before replacing each installed copy, restores executable permissions, and keeps the previous binaries if compilation fails. An existing directory named `reconx` at either binary destination must be moved aside first; its contents are never overwritten.
+
+Then, from the directory containing your scan's `reconx-output` folder, use the rebuilt executable's absolute path. For example, if cloned into `~/Downloads/reconx`:
+
+```bash
+~/Downloads/reconx/reconx --report-only reconx-output/aegeanair.com-2298197030
+```
+
+This regenerates reports from the saved checkpoint without scanning. Run it as your normal user. `/home/...` is an absolute path; `./home/...` instead searches inside the current directory.
+
 For custom locations, set `RECONX_BIN_DIR`, `RECONX_TOOLS_DIR`, `RECONX_SETUP_DIR`, or `RECONX_RUNTIME_DIR`. `RECONX_GO` selects an existing Go executable; `RECONX_GO_VERSION` selects a release when Go needs downloading. The final output prints the actual installed paths.
 
 ## Reading scan results
