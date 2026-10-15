@@ -238,3 +238,36 @@ func TestParamSpiderBudgetsLoadAndValidate(t *testing.T) {
 		t.Fatal("negative budget accepted")
 	}
 }
+
+func TestScanningIsOptInAndGeneratedConfigKeepsItOff(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.Phases.PortScan || cfg.Phases.VulnScan {
+		t.Fatal("active scanners enabled by default")
+	}
+	path := filepath.Join(t.TempDir(), "reconx.ini")
+	if err := WriteDefault(path); err != nil {
+		t.Fatal(err)
+	}
+	loaded := DefaultConfig()
+	if err := Load(loaded, path); err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Phases.PortScan || loaded.Phases.VulnScan {
+		t.Fatal("generated config opts in")
+	}
+}
+
+func TestProfilesNeverEnableActiveScanners(t *testing.T) {
+	for _, profile := range []string{"quick", "standard", "deep", "custom"} {
+		cfg := DefaultConfig()
+		if err := ApplyProfile(cfg, profile); err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Phases.PortScan || cfg.Phases.VulnScan {
+			t.Fatal(profile)
+		}
+	}
+	if err := ApplyProfile(DefaultConfig(), "unknown"); err == nil {
+		t.Fatal("unknown profile accepted")
+	}
+}

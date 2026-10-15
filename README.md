@@ -1,6 +1,6 @@
-# ReconX
+# ReconX 1.2
 
-ReconX orchestrates scoped bug bounty reconnaissance with a Go CLI, a local web dashboard, complete scan checkpoints, and HTML/JSON reports. Scanner matches and secret patterns are candidates that require impact validation.
+ReconX orchestrates scoped bug bounty reconnaissance with a Go CLI, a local web dashboard, complete scan checkpoints, and HTML/JSON reports. Scanner matches and secret patterns are candidates that require impact validation. **Port scanning and Nuclei are off by default in both CLI and dashboard.**
 
 ## Install
 
@@ -18,7 +18,10 @@ Start the dashboard with `~/.local/bin/reconx-web`, or use `./reconx --help` fro
 
 ```bash
 ./reconx -d example.com --scope scope.txt --workers 5
-./reconx -d example.com --skip-ports --skip-vuln
+./reconx -d example.com --profile quick
+./reconx --doctor
+# Explicit opt-in only when the program permits these checks:
+./reconx -d example.com --ports --nuclei
 ./reconx --init
 ./reconx -d example.com --config reconx.ini
 ./reconx --resume ./reconx-output/example.com-SCANID
@@ -129,3 +132,32 @@ Tests are offline by default and use local HTTP servers/fake binaries. The old l
 ## License
 
 MIT — see [LICENSE](LICENSE). Use only within an authorized assessment scope.
+
+## Version 1.2 workflow
+
+- Recon profiles: `--profile quick|standard|deep|custom`. Quick limits source budgets and disables the slow Amass/Gospider/Hakrawler/ParamSpider adapters. Deep extends total recon budgets. Profiles never enable ports or Nuclei. Explicit INI settings override profile defaults; explicit CLI phase switches override INI settings.
+- Read-only preflight: `./reconx --doctor` prints resolved tool paths, availability, worker settings and optional scanner state. It does not scan a target or prove provider/binary compatibility.
+- HTTPx and supported stdin/file crawlers run in batches of 32 inputs. Successful batches are owner-private journal entries in `tasks/`; resume retries incomplete batches and restores successful parser output. `timeout` is the per-batch tool timeout; `total_timeout` bounds the source as a whole (HTTPx defaults to 60 minutes, supported URL sources to 30). This hard source budget still applies under `--no-timeout`.
+- WAF checks use bounded per-host jobs (45 seconds maximum per host), a 30-minute total default budget, and preserve completed host results. Untested or failed hosts remain unknown.
+- Amass retains partial output; completed domain results are reused on resume. The default collection timeout is 30 minutes. Remote provider limits and tool deadlines can still leave partial coverage: these are reported, never re-labelled as complete.
+- `events.jsonl` contains structured phase/tool completion events. Dashboard phase status comes from the manifest instead of guessing it from log text.
+
+### The HTML report is the primary offline reference
+
+The report includes the entire collected dataset, paginated tables, global table search and sorting, complete matching CSV exports, a masked JSON export, asset profiles, HTTP endpoints, ports, networks, JavaScript, parameter mappings, scanner/secret candidates, CORS/cloud/WAF observations, source/phase coverage, batch journals, screenshots and raw evidence links. Known secret values are scrubbed from embedded evidence and metadata. Raw linked files remain private.
+
+Candidates can be marked reviewed, false positive or confirmed, with notes. Those labels are manual local browser annotations, not automated verification. Export JSON to preserve or move your annotations.
+
+Rebuild a saved scan's report without performing new network tests:
+
+```bash
+./reconx --report-only ./reconx-output/EXISTING-SCAN
+```
+
+Compare it with an earlier saved checkpoint:
+
+```bash
+./reconx --report-only ./reconx-output/CURRENT-SCAN --compare-with ./reconx-output/PREVIOUS-SCAN
+```
+
+The comparison uses **added** and **unobserved**, not "removed": skipped or partial checks cannot establish that an asset disappeared. Review scope and coverage on both scans.

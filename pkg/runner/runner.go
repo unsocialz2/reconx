@@ -34,7 +34,7 @@ func (r *Result) HasResults() bool { return len(r.Lines) > 0 }
 
 // IsTimeout returns true if the run exceeded its deadline
 func (r *Result) IsTimeout() bool {
-	return r.Err != nil && strings.Contains(r.Err.Error(), "timeout")
+	return errors.Is(r.Err, context.DeadlineExceeded) || (r.Err != nil && strings.Contains(r.Err.Error(), "timeout"))
 }
 
 // IsNotFound returns true if the binary was not found
@@ -53,7 +53,7 @@ func (r *Result) DiagString() string {
 	case r.IsNotFound():
 		return fmt.Sprintf("%s: binary not found in PATH — install it or check 'which %s'", r.Tool, r.Tool)
 	case r.IsTimeout():
-		return fmt.Sprintf("%s: timed out after %s — increase timeout or use --skip-%s", r.Tool, r.Duration.Round(time.Second), r.Tool)
+		return fmt.Sprintf("%s: timed out after %s — adjust [tool.%s] timeout/total_timeout or disable that tool; partial output retained", r.Tool, r.Duration.Round(time.Second), filepath.Base(r.Tool))
 	case r.ExitCode == 2:
 		return fmt.Sprintf("%s: exit 2 — likely bad flags or missing config (stderr: %s)", r.Tool, strings.Join(r.Stderr, " | "))
 	case r.ExitCode != 0:
@@ -415,7 +415,7 @@ func Run(ctx context.Context, name string, args []string, opts ...Option) (resul
 
 	// Classify timeout
 	if runCtx.Err() == context.DeadlineExceeded {
-		runErr = fmt.Errorf("timeout after %s: %w", effectiveTimeout.Round(time.Second), context.DeadlineExceeded)
+		runErr = fmt.Errorf("timeout after %s: %w", dur.Round(time.Second), context.DeadlineExceeded)
 	} else if runCtx.Err() != nil {
 		runErr = runCtx.Err()
 	}

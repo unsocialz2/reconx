@@ -1,9 +1,5 @@
 export type ViewMode =
-  | "new-scan"
-  | "history"
-  | "progress"
-  | "results"
-  | "guide";
+  "new-scan" | "history" | "progress" | "results" | "guide";
 export type PhaseKey =
   | "subs"
   | "alive"
@@ -34,6 +30,7 @@ export interface SavedSettings {
 }
 
 export interface ScanConfig {
+  profile?: "quick" | "standard" | "deep" | "custom";
   workers?: number;
   cloudAssets?: string[];
   domains: string[];
@@ -48,6 +45,8 @@ export interface ScanConfig {
   skipSubs?: boolean;
   skipAlive?: boolean;
   skipPorts?: boolean;
+  enablePorts?: boolean;
+  enableNuclei?: boolean;
   skipUrls?: boolean;
   skipJs?: boolean;
   skipVuln?: boolean;

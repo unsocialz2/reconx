@@ -1,7 +1,7 @@
 // Offline integration tests against the actual production server, with a fake CLI.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, stat, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, readFile, stat, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -21,6 +21,7 @@ before(async () => {
     `#!/usr/bin/env node
 const fs=require('node:fs'),path=require('node:path');
 const args=process.argv.slice(2);const out=args[args.indexOf('--output')+1];const dir=path.join(out,path.basename(process.cwd()));fs.mkdirSync(dir,{recursive:true});
+fs.writeFileSync(path.join(process.cwd(),'args.json'),JSON.stringify(args));
 console.log('Output: '+dir);
 fs.writeFileSync(path.join(dir,'results.json'),JSON.stringify({scan_id:'fixture',secrets:[{type:'fixture',value:'private-test-secret'}],urls:['https://example.com/'],coverage:['fixture only']}));
 if(args.includes('slow.example.com')) setInterval(()=>console.log('working'),1000);else setTimeout(()=>process.exit(0),100);
@@ -142,4 +143,30 @@ test("stop terminates an owned running scan", async () => {
     (await (await fetch(base + "/api/scans/" + scanId)).json()).scan.status,
     "stopped",
   );
+});
+
+test("port and nuclei scans require explicit opt in", async () => {
+  for (const enabled of [false, true]) {
+    const response = await post("/api/scans", {
+      domains: ["example.com"],
+      enablePorts: enabled,
+      enableNuclei: enabled,
+    });
+    assert.equal(response.status, 201);
+    const { scanId } = await response.json();
+    let args;
+    for (let i = 0; i < 100; i++) {
+      try {
+        args = JSON.parse(
+          await readFile(path.join(root, "scans", scanId, "args.json"), "utf8"),
+        );
+        break;
+      } catch {
+        await delay(20);
+      }
+    }
+    assert.ok(args.includes(enabled ? "--ports" : "--skip-ports"));
+    assert.ok(args.includes(enabled ? "--nuclei" : "--skip-vuln"));
+    await delay(200);
+  }
 });

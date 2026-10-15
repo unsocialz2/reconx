@@ -11,6 +11,7 @@ export default function ScanProgress({
   onBack: () => void;
 }) {
   const [scan, setScan] = useState<ScanMetadata | null>(null),
+    [phases, setPhases] = useState<Record<string, { status: string }>>({}),
     [log, setLog] = useState(""),
     [error, setError] = useState("");
   useEffect(() => {
@@ -23,6 +24,7 @@ export default function ScanProgress({
         if (alive) {
           setScan(d.scan);
           setLog(d.log);
+          setPhases(d.phases || {});
         }
       } catch {
         if (alive) setError("Could not refresh scan");
@@ -58,6 +60,14 @@ export default function ScanProgress({
         </div>
       </div>
       <p role="alert">{error}</p>
+      <div className="mb-4 grid grid-cols-2 gap-2 md:grid-cols-4">
+        {Object.entries(phases).map(([name, state]) => (
+          <div key={name} className="rounded border border-slate-700 p-3">
+            <div className="text-sm">{name}</div>
+            <div className="text-xs text-teal-300">{state.status}</div>
+          </div>
+        ))}
+      </div>
       <pre className="max-h-[65vh] overflow-auto whitespace-pre-wrap rounded-xl bg-slate-950 p-5 text-xs text-slate-300">
         {log || "Waiting for output…"}
       </pre>

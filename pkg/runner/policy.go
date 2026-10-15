@@ -108,7 +108,25 @@ func MergeFlags(base, override []string) []string {
 	return out
 }
 func policyArgs(key string, args []string, p *Policy, t ToolPolicy) []string {
-	args = MergeFlags(args, t.Flags)
+	// Migrate legacy aliases so old INI files cannot reintroduce invalid flags.
+	normalize := func(items []string) []string {
+		out := append([]string(nil), items...)
+		for i, arg := range out {
+			parts := strings.SplitN(arg, "=", 2)
+			if (key == "mantra" || key == "naabu") && (parts[0] == "-threads" || parts[0] == "--threads") {
+				flag := "-t"
+				if key == "naabu" {
+					flag = "-c"
+				}
+				out[i] = flag
+				if len(parts) == 2 {
+					out[i] += "=" + parts[1]
+				}
+			}
+		}
+		return out
+	}
+	args = MergeFlags(normalize(args), normalize(t.Flags))
 	if t.RateLimit > 0 {
 		rate := strconv.Itoa(t.RateLimit)
 		switch key {

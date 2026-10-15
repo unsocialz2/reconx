@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -83,5 +84,17 @@ func TestURLToolConcurrencyDoesNotMultiplyWorkers(t *testing.T) {
 		if !seen {
 			t.Fatal(tc.tool, args)
 		}
+	}
+}
+
+func TestLegacyMantraFlagsCannotReintroduceThreads(t *testing.T) {
+	args := policyArgs("mantra", []string{"-threads", "50", "-s"}, &Policy{Workers: 2}, ToolPolicy{Flags: []string{"--threads=20"}})
+	for _, a := range args {
+		if strings.Contains(a, "threads") {
+			t.Fatal(args)
+		}
+	}
+	if !reflect.DeepEqual(args, []string{"-s", "-t", "2"}) {
+		t.Fatal(args)
 	}
 }

@@ -21,11 +21,11 @@ Use your normal user account. On Linux, the installer asks for sudo access to in
 
 ## What the script does
 
-- Installs OS build dependencies, including libpcap headers.
+- Installs OS build dependencies; libpcap headers are included only with optional scanners.
 - Uses a suitable existing Go/Node installation or downloads a user-local runtime with SHA-256 verification.
 - Builds ReconX both in the repository and in `~/.local/bin`.
-- Installs pinned subfinder, httpx, nuclei, naabu, katana, dnsx, gau, and Gitleaks into `~/go/bin` by default.
-- Downloads nuclei templates and checks tool help output.
+- Installs pinned subfinder, httpx, katana, dnsx, gau, and Gitleaks into `~/go/bin` by default. Naabu/Nuclei are optional with `--with-scanners`.
+- Checks tool help output. Nuclei templates are downloaded only with `--with-scanners`.
 - Installs a checksum-verified SecLists DNS wordlist (5,000 names); preserves an existing custom wordlist.
 - Installs and builds the dashboard.
 - Runs offline Go, installer, and dashboard checks, plus a CLI smoke test with every scan phase disabled.
@@ -108,3 +108,17 @@ Progress shows `850/2437 hosts | 1240 URLs`. Processed hosts count finished atte
 URL source summaries are printed at phase end and saved in `data/url_discovery_summary.json`, including terminal status, counts and frozen start/finish times. A quiet live subprocess is shown as **running/silent**; lack of output alone no longer implies a stuck process.
 
 URL discovery uses `--workers` for local queues and runner slots. GAU/GAUPlus use one thread per host subprocess to avoid multiplying the worker limit; Katana crawls one input at a time with bounded request concurrency, and Gospider uses one site worker with bounded request concurrency.
+
+## Optional scanners and upgrade
+
+Port scanning and Nuclei are disabled by default, including in all profiles. Their installation is optional too:
+
+```bash
+bash install.sh --cli-only --with-scanners
+```
+
+Only enable execution when the target program permits it: `--ports` and `--nuclei` (or explicit `[phases] port_scan = true` / `vuln_scan = true`). Existing INI files with those values set to true are explicit opt-ins; change them to false for recon-only operation. Existing installed scanners are not uninstalled.
+
+After upgrading, `./reconx --version` should print `v1.2.0`. A binary built before the Mantra worker fix can still emit `-threads`; rebuild or rerun the installer. Version 1.2 also migrates legacy Mantra/Naabu thread aliases in custom flags.
+
+Use `./reconx --doctor` for a read-only tool/settings inventory. For a new HTML report from an old run, use `--report-only PATH`; this does not scan again.

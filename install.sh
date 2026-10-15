@@ -8,15 +8,16 @@ STATE_DIR="${RECONX_SETUP_DIR:-$HOME/.config/reconx}"
 RUNTIME_DIR="${RECONX_RUNTIME_DIR:-$HOME/.local/share/reconx}"
 INSTALL_DIR="${RECONX_BIN_DIR:-$HOME/.local/bin}"
 TOOLS_DIR="${RECONX_TOOLS_DIR:-${GOBIN:-$HOME/go/bin}}"
-SKIP_SYSTEM=0 SKIP_TOOLS=0 SKIP_WEB=0 SKIP_CHECKS=0 NO_PROFILE=0 BINARY_ONLY=0
+SKIP_SYSTEM=0 SKIP_TOOLS=0 SKIP_WEB=0 SKIP_CHECKS=0 NO_PROFILE=0 BINARY_ONLY=0 WITH_SCANNERS=0
 
 usage() {
   cat <<'HELP'
 Usage: bash install.sh [options]
 
 Default: system prerequisites, Go/Node if needed, ReconX, core tools,
-         nuclei templates, dashboard, offline checks, and shell PATH setup.
+         dashboard, offline checks, and shell PATH setup.
 
+  --with-scanners     Also install optional Naabu/Nuclei and nuclei templates
   --cli-only          Skip Node.js and the dashboard
   --binary-only       Build/install ReconX only (Go must already be available)
   --skip-system-deps  Do not run apt/dnf/Homebrew
@@ -31,6 +32,7 @@ HELP
 }
 for arg in "$@"; do
   case "$arg" in
+    --with-scanners) WITH_SCANNERS=1 ;;
     --cli-only) SKIP_WEB=1 ;;
     --binary-only) BINARY_ONLY=1; SKIP_SYSTEM=1; SKIP_TOOLS=1; SKIP_WEB=1; SKIP_CHECKS=1; NO_PROFILE=1 ;;
     --skip-system-deps) SKIP_SYSTEM=1 ;;
@@ -73,11 +75,11 @@ if (( ! SKIP_SYSTEM )); then
     if command -v apt-get >/dev/null 2>&1; then
       "${PRIVILEGE[@]}" apt-get update
       packages=(git make build-essential curl ca-certificates pkg-config python3 xz-utils)
-      (( SKIP_TOOLS )) || packages+=(libpcap-dev)
+      (( SKIP_TOOLS || ! WITH_SCANNERS )) || packages+=(libpcap-dev)
       "${PRIVILEGE[@]}" env DEBIAN_FRONTEND=noninteractive apt-get install -y "${packages[@]}"
     elif command -v dnf >/dev/null 2>&1; then
       packages=(git make gcc gcc-c++ curl ca-certificates pkgconf-pkg-config python3 xz)
-      (( SKIP_TOOLS )) || packages+=(libpcap-devel)
+      (( SKIP_TOOLS || ! WITH_SCANNERS )) || packages+=(libpcap-devel)
       "${PRIVILEGE[@]}" dnf install -y "${packages[@]}"
     else
       printf 'No apt/dnf found. Install Git, Make, C compiler, curl, Python 3, xz and libpcap headers; rerun with --skip-system-deps.\n' >&2
@@ -91,7 +93,7 @@ if (( ! SKIP_SYSTEM )); then
     fi
     need brew
     packages=(git make curl python xz)
-    (( SKIP_TOOLS )) || packages+=(libpcap)
+    (( SKIP_TOOLS || ! WITH_SCANNERS )) || packages+=(libpcap)
     brew install "${packages[@]}"
   fi
 else
@@ -158,20 +160,21 @@ if (( ! SKIP_TOOLS )); then
   TOOLS=(
     'github.com/projectdiscovery/subfinder/v2/cmd/subfinder@v2.9.0'
     'github.com/projectdiscovery/httpx/cmd/httpx@v1.7.1'
-    'github.com/projectdiscovery/nuclei/v3/cmd/nuclei@v3.4.10'
-    'github.com/projectdiscovery/naabu/v2/cmd/naabu@v2.3.5'
     'github.com/projectdiscovery/katana/cmd/katana@v1.1.2'
     'github.com/projectdiscovery/dnsx/cmd/dnsx@v1.2.2'
     'github.com/lc/gau/v2/cmd/gau@v2.2.4'
     'github.com/zricethezav/gitleaks/v8@v8.24.2'
   )
+  if (( WITH_SCANNERS )); then
+    TOOLS+=('github.com/projectdiscovery/nuclei/v3/cmd/nuclei@v3.4.10' 'github.com/projectdiscovery/naabu/v2/cmd/naabu@v2.3.5')
+  fi
   failed=()
   for tool in "${TOOLS[@]}"; do
     printf 'Installing %s\n' "$tool"
     if ! "$GO_BIN" install "$tool"; then failed+=("$tool"); fi
   done
   if (( ${#failed[@]} )); then printf 'Failed tools: %s\n' "${failed[*]}" >&2; exit 1; fi
-  for tool in subfinder httpx nuclei naabu katana dnsx; do "$TOOLS_DIR/$tool" -h > "$WORK_DIR/$tool-help.txt" 2>&1; done
+  for tool in subfinder httpx katana dnsx; do "$TOOLS_DIR/$tool" -h > "$WORK_DIR/$tool-help.txt" 2>&1; done
   "$TOOLS_DIR/gitleaks" --help > "$WORK_DIR/gitleaks-help.txt" 2>&1
   "$TOOLS_DIR/gau" --help > "$WORK_DIR/gau-help.txt" 2>&1
   step 'DNS brute-force wordlist'
@@ -184,8 +187,11 @@ if (( ! SKIP_TOOLS )); then
     cp "$WORK_DIR/subdomains.txt" "$dns_wordlist"
   fi
   printf 'DNS wordlist: %s (dnsx uses the system resolver unless --resolvers is supplied).\n' "$dns_wordlist"
-  step 'Nuclei templates (download only)'
-  "$TOOLS_DIR/nuclei" -update-templates
+  if (( WITH_SCANNERS )); then
+    for tool in nuclei naabu; do "$TOOLS_DIR/$tool" -h > "$WORK_DIR/$tool-help.txt" 2>&1; done
+    step 'Nuclei templates (download only)'
+    "$TOOLS_DIR/nuclei" -update-templates
+  fi
   printf 'Core tools (including Gitleaks) and help checks passed. Screenshots and additional scanners are optional.\n'
 fi
 

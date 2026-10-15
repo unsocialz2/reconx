@@ -24,7 +24,7 @@ case "$1" in
   cat > "$out" <<'CLI'
 #!/usr/bin/env bash
 set -e
-if [[ "$1" == --version ]]; then echo 'v1.1.0';exit;fi
+if [[ "$1" == --version ]]; then echo 'v1.2.0';exit;fi
 if [[ "$1" == --help ]]; then echo 'ReconX help';exit;fi
 all_args=" $* "
 for phase in subs alive ports urls js vuln cloud cors;do
@@ -161,6 +161,9 @@ p.write_text(p.read_text().replace('e331367c140298cb179114fdeefa78f58f696219f0de
 PYDNS
 bash "$FIXTURE/project/install.sh" --skip-system-deps --cli-only --skip-checks --no-profile > "$FIXTURE/dns-install.log" 2>&1
 cmp "$FIXTURE/download/dns-wordlist.txt" "$FIXTURE/setup/wordlists/subdomains.txt"
+[[ ! -e "$FIXTURE/tools/nuclei" && ! -e "$FIXTURE/tools/naabu" ]]
+bash "$FIXTURE/project/install.sh" --skip-system-deps --cli-only --skip-checks --no-profile --with-scanners > "$FIXTURE/optional-scanners.log" 2>&1
+[[ -x "$FIXTURE/tools/nuclei" && -x "$FIXTURE/tools/naabu" ]]
 printf 'custom-user-wordlist\n' > "$FIXTURE/setup/wordlists/subdomains.txt"
 bash "$FIXTURE/project/install.sh" --skip-system-deps --cli-only --skip-checks --no-profile > "$FIXTURE/dns-repeat.log" 2>&1
 grep -qx 'custom-user-wordlist' "$FIXTURE/setup/wordlists/subdomains.txt"

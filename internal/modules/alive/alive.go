@@ -2,7 +2,9 @@ package alive
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/unsocialz2/reconx/internal/scope"
 	"io"
@@ -10,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -86,7 +89,7 @@ func (m *Module) Run(ctx context.Context) error {
 	// ── WAF Detection (after httpx, before fuzzing/vuln scan) ───────────────
 	// Knowing whether a WAF is present lets us tune threads/timing in later
 	// phases to avoid getting blocked or rate-limited.
-	m.runWAFDetection(ctx)
+	wafErr := m.runWAFDetection(ctx)
 	m.saveAliveWAFSplit() // write live_waf.txt / live_nowaf.txt
 
 	// ── TLS / Certificate info ─────────────────────────────────────────────
@@ -101,7 +104,7 @@ func (m *Module) Run(ctx context.Context) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	return err
+	return errors.Join(err, wafErr)
 }
 
 func (m *Module) runHttpx(ctx context.Context, subs []string, path string, tcfg config.ToolConfig) error {
@@ -148,8 +151,13 @@ func (m *Module) runHttpx(ctx context.Context, subs []string, path string, tcfg 
 		}
 	})
 
-	r := runner.Run(ctx, path, args,
-		runner.WithStdin(input),
+	budget := time.Hour
+	if tcfg.TotalTimeout > 0 {
+		budget = time.Duration(tcfg.TotalTimeout) * time.Second
+	}
+	ctx = runner.WithProcessObserver(ctx, func(pid int, alive bool) { board.Process("httpx", pid, alive) })
+	r := runner.RunInputBatches(ctx, path, args, input, 32, budget, "",
+		runner.WithUniqueLines(),
 		runner.WithTimeout(time.Duration(tcfg.Timeout)*time.Second),
 		runner.WithStderrCallback(func(line string) {
 			// httpx writes non-fatal warnings to stderr — log them as debug
@@ -447,7 +455,7 @@ func firstOf(s string, keys ...string) string {
 // runWAFDetection runs wafw00f against all live hosts to identify WAF presence.
 // Results are stored in alive/waf_results.txt and logged with a prominent warning
 // if any WAFs are detected — this helps tune threading/rate in later fuzzing phases.
-func (m *Module) runWAFDetection(ctx context.Context) {
+func (m *Module) runWAFDetection(ctx context.Context) error {
 	tcfg := m.cfg.Tools["wafw00f"]
 	path := "wafw00f"
 	if tcfg.Path != "" {
@@ -456,59 +464,100 @@ func (m *Module) runWAFDetection(ctx context.Context) {
 
 	if !m.cfg.ToolAvailable(path) {
 		m.log.ToolSkipped("wafw00f", "not found — install: pip3 install wafw00f")
-		return
+		return nil
 	}
 
 	aliveFile := m.outDir + "/alive.txt"
 	if _, err := os.Stat(aliveFile); os.IsNotExist(err) {
 		m.log.Debug("wafw00f: alive.txt not found, skipping")
-		return
+		return nil
 	}
 
-	outFile := store.DataDir(m.outDir) + "/wafw00f.json"
-	args := []string{"-i", aliveFile, "-o", outFile, "-a"}
 	timeout := time.Duration(tcfg.Timeout) * time.Second
-	if timeout == 0 {
-		timeout = 5 * time.Minute
+	if timeout <= 0 {
+		timeout = 45 * time.Second
 	}
-
-	m.log.Tool("wafw00f", "detecting WAF on all live hosts")
-	m.log.ToolCmd("wafw00f", args, "")
 	start := time.Now()
-
-	r := runner.Run(ctx, path, args, runner.WithTimeout(timeout))
-
-	wafCount := 0
-	if data, err := os.ReadFile(outFile); err == nil {
-		results, err := parseWAFJSON(data)
-		if err != nil {
-			m.store.AddCoverage("wafw00f: invalid JSON results; some WAF statuses unknown")
-			m.log.Warn("wafw00f output: %v", err)
-		} else {
+	hosts := m.store.GetHosts()
+	budget := 30 * time.Minute
+	if tcfg.TotalTimeout > 0 {
+		budget = time.Duration(tcfg.TotalTimeout) * time.Second
+	}
+	runCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	sem := make(chan struct{}, max(1, m.cfg.Workers))
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	failed := 0
+	checked := 0
+schedule:
+	for _, h := range hosts {
+		target := h.Meta["url"]
+		if target == "" {
+			target = "https://" + h.Domain
+		}
+		if _, known := m.store.WAFStatus(target); known {
+			mu.Lock()
+			checked++
+			mu.Unlock()
+			continue
+		}
+		select {
+		case sem <- struct{}{}:
+		case <-runCtx.Done():
+			break schedule
+		}
+		wg.Add(1)
+		go func(target string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			key := fmt.Sprintf("%x", sha256.Sum256([]byte(target)))
+			outFile := filepath.Join(store.DataDir(m.outDir), "waf-"+key+".json")
+			doneFile := outFile + ".done"
+			var results []*store.WAFResult
+			if _, err := os.Stat(doneFile); err == nil {
+				if data, err := os.ReadFile(outFile); err == nil {
+					results, _ = parseWAFJSON(data)
+				}
+			}
+			if len(results) == 0 {
+				// One host per job prevents one slow target consuming the whole list's timeout.
+				perHost := min(timeout, 45*time.Second)
+				taskCtx, stop := context.WithTimeout(runCtx, perHost)
+				r := runner.Run(taskCtx, path, []string{"-i", writeWAFTarget(outFile, target), "-o", outFile, "-a"}, runner.WithTimeout(perHost))
+				stop()
+				if data, err := os.ReadFile(outFile); err == nil {
+					results, _ = parseWAFJSON(data)
+				}
+				if r.Err != nil || len(results) == 0 {
+					mu.Lock()
+					failed++
+					mu.Unlock()
+				} else {
+					_ = os.WriteFile(doneFile, []byte("completed"), 0600)
+				}
+			}
 			for _, result := range results {
 				if scope.New(m.cfg).IsInScope(result.Host) {
 					m.store.AddWAFResult(result)
-					if result.Detected {
-						wafCount++
-						m.log.Warn("WAF detected: %s — %s", result.Host, result.WAF)
-					}
 				}
 			}
-		}
+			mu.Lock()
+			checked++
+			mu.Unlock()
+		}(target)
+	}
+	wg.Wait()
+	if failed > 0 || checked < len(hosts) {
+		reason := fmt.Sprintf("wafw00f: partial — %d/%d hosts processed; %d failed; unknown statuses preserved", checked, len(hosts), failed)
+		m.store.AddCoverage(reason)
+		m.log.Warn("%s", reason)
+		return errors.New(reason)
 	} else {
-		m.store.AddCoverage("wafw00f: result file unavailable; WAF statuses unknown")
+		m.log.ToolDone("wafw00f", checked, time.Since(start))
 	}
 
-	if r.Err != nil && wafCount == 0 {
-		m.log.ToolError("wafw00f", fmt.Errorf("%s", r.DiagString()), r.Stderr)
-	} else {
-		m.log.ToolDone("wafw00f", wafCount, time.Since(start))
-		if wafCount > 0 {
-			m.log.Warn("⚠  %d WAF(s) detected — consider reducing thread counts in dir fuzzing & vuln scan", wafCount)
-		} else {
-			m.log.Info("wafw00f: no WAFs detected")
-		}
-	}
+	return nil
 }
 
 // ── TLS / Certificate info ─────────────────────────────────────────────────────────────────────
@@ -674,4 +723,10 @@ func parseWAFJSON(data []byte) ([]*store.WAFResult, error) {
 		}
 	}
 	return out, nil
+}
+
+func writeWAFTarget(outFile, target string) string {
+	path := outFile + ".input"
+	_ = os.WriteFile(path, []byte(target+"\n"), 0600)
+	return path
 }

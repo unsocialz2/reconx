@@ -211,13 +211,30 @@ func (p *Pipeline) Run(ctx context.Context) error {
 	policy := p.cfg.RunnerPolicy()
 	policy.ProxyURL = proxyURL
 	ctx = runner.WithPolicy(ctx, policy)
-	p.log.Banner("v1.1.0")
+	ctx = runner.WithTaskDirectory(ctx, filepath.Join(p.outDir, "tasks"))
+	p.log.Banner("v1.2.0")
 	p.log.Info("Scan ID: %s", p.store.ScanID)
 	p.log.Info("Output: %s", p.outDir)
+	events, err := os.OpenFile(filepath.Join(p.outDir, "events.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	defer events.Close()
+	var eventMu sync.Mutex
+	var eventErr error
+	emit := func(kind, phase, tool, status string) {
+		eventMu.Lock()
+		defer eventMu.Unlock()
+		record := map[string]any{"time": time.Now().UTC(), "event": kind, "phase": phase, "tool": tool, "status": status}
+		if err := json.NewEncoder(events).Encode(record); err != nil {
+			eventErr = errors.Join(eventErr, err)
+		}
+	}
 	var phaseErrors []error
 	run := func(name string, enabled bool, fn func(context.Context) error) {
 		if !enabled {
 			p.manifest.Phases[name] = PhaseState{Status: "skipped", Reason: "disabled by configuration"}
+			emit("phase.finished", name, "", "skipped")
 			return
 		}
 		if prior := p.manifest.Phases[name]; p.cfg.ResumeDir != "" && prior.Status == "completed" {
@@ -229,6 +246,7 @@ func (p *Pipeline) Run(ctx context.Context) error {
 			return
 		}
 		state := PhaseState{Status: "running", StartedAt: time.Now()}
+		emit("phase.started", name, "", "running")
 		p.manifest.Phases[name] = state
 		if err := p.checkpoint(); err != nil {
 			phaseErrors = append(phaseErrors, err)
@@ -240,6 +258,11 @@ func (p *Pipeline) Run(ctx context.Context) error {
 			p.log.EffectiveToolCmd(path, args)
 		})
 		phaseCtx = runner.WithObserver(phaseCtx, func(r *runner.Result) {
+			status := "completed"
+			if r.Err != nil {
+				status = "partial"
+			}
+			emit("tool.finished", name, filepath.Base(r.Tool), status)
 			if r.Err != nil && !errors.Is(r.Err, runner.ErrDisabled) && !(strings.Contains(r.Tool, "gitleaks") && r.ExitCode == 1) {
 				mu.Lock()
 				failures = append(failures, r.DiagString())
@@ -268,6 +291,7 @@ func (p *Pipeline) Run(ctx context.Context) error {
 			p.store.AddCoverage(name + ": " + state.Status + " — " + state.Reason)
 		}
 		p.manifest.Phases[name] = state
+		emit("phase.finished", name, "", state.Status)
 		if err := p.checkpoint(); err != nil {
 			phaseErrors = append(phaseErrors, err)
 		}
@@ -329,6 +353,9 @@ func (p *Pipeline) Run(ctx context.Context) error {
 			phaseErrors = append(phaseErrors, err)
 		}
 	}
+	if eventErr != nil {
+		phaseErrors = append(phaseErrors, eventErr)
+	}
 	p.printSummary(time.Since(p.store.StartTime))
 	if ctx.Err() != nil {
 		return ctx.Err()
@@ -373,7 +400,7 @@ func (p *Pipeline) removeRawOutputs() error {
 	if err != nil {
 		return err
 	}
-	keep := map[string]bool{"checkpoint.json": true, "manifest.json": true, "results.json": p.cfg.Output.JSONReport, "report.html": p.cfg.Output.HTMLReport, "reconx.log": true, "screenshots": true}
+	keep := map[string]bool{"checkpoint.json": true, "manifest.json": true, "results.json": p.cfg.Output.JSONReport, "report.html": p.cfg.Output.HTMLReport, "reconx.log": true, "screenshots": true, "tasks": true, "events.jsonl": true}
 	for _, e := range entries {
 		if !keep[e.Name()] {
 			if err := os.RemoveAll(filepath.Join(p.outDir, e.Name())); err != nil {
@@ -451,6 +478,10 @@ func (p *Pipeline) checkTools() {
 	totalMissing := 0
 
 	for _, cat := range categories {
+		if (cat.label == "Ports" && !p.cfg.Phases.PortScan) || (cat.label == "Vuln" && !p.cfg.Phases.VulnScan) {
+			p.log.Info("  %s: disabled (opt in)", cat.label)
+			continue
+		}
 		var avail, missing []string
 		for _, t := range cat.tools {
 			if runner.IsAvailable(t) {

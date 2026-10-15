@@ -30,7 +30,10 @@ export const scanSchema = z
     wordlist: clean.optional(),
     skipSubs: z.boolean().optional(),
     skipAlive: z.boolean().optional(),
+    profile: z.enum(["quick", "standard", "deep", "custom"]).optional(),
     skipPorts: z.boolean().optional(),
+    enablePorts: z.boolean().optional(),
+    enableNuclei: z.boolean().optional(),
     skipUrls: z.boolean().optional(),
     skipJs: z.boolean().optional(),
     skipVuln: z.boolean().optional(),
@@ -123,6 +126,8 @@ export async function launch(input: unknown) {
   const configFile = path.join(dir, "scan.ini");
   await fs.writeFile(configFile, ini, { mode: 0o600 });
   const args = [
+    "--profile",
+    cfg.profile || "standard",
     "--config",
     configFile,
     "--output",
@@ -144,10 +149,10 @@ export async function launch(input: unknown) {
   for (const [key, flag] of [
     ["skipSubs", "skip-subs"],
     ["skipAlive", "skip-alive"],
-    ["skipPorts", "skip-ports"],
+
     ["skipUrls", "skip-urls"],
     ["skipJs", "skip-js"],
-    ["skipVuln", "skip-vuln"],
+
     ["enableFuzz", "fuzz"],
     ["enableParams", "params"],
     ["skipCloud", "skip-cloud"],
@@ -155,6 +160,8 @@ export async function launch(input: unknown) {
     ["noTimeout", "no-timeout"],
   ] as const)
     if (cfg[key]) args.push("--" + flag);
+  args.push(cfg.enablePorts && !cfg.skipPorts ? "--ports" : "--skip-ports");
+  args.push(cfg.enableNuclei && !cfg.skipVuln ? "--nuclei" : "--skip-vuln");
   const now = new Date().toISOString();
   const pendingMeta: ScanMetadata = {
     id,
@@ -244,12 +251,39 @@ export async function scanDetails(id: string) {
   const match = log
     .replace(/\x1b\[[0-9;]*m/g, "")
     .match(/Output:\s+([^\r\n]+)/);
+  let phases: Record<
+    string,
+    { status: string; started_at?: string; finished_at?: string }
+  > = {};
   let results: Record<string, unknown> | null = null;
   if (match) {
     const out = path.resolve(match[1].replace(/\x1b\[[0-9;]*m/g, "").trim());
     const relative = path.relative(path.resolve(OUTPUT_DIR), out);
     if (relative && !relative.startsWith("..") && !path.isAbsolute(relative)) {
       meta.outputDir = out;
+      try {
+        const manifest = JSON.parse(
+          await fs.readFile(path.join(out, "manifest.json"), "utf8"),
+        );
+        phases = Object.fromEntries(
+          Object.entries(manifest.phases || {}).map(([name, state]) => {
+            const s = state as {
+              status: string;
+              started_at?: string;
+              finished_at?: string;
+            };
+            return [
+              name,
+              {
+                status: s.status,
+                started_at: s.started_at,
+                finished_at: s.finished_at,
+              },
+            ];
+          }),
+        );
+      } catch {}
+
       try {
         results = JSON.parse(
           await fs.readFile(path.join(out, "results.json"), "utf8"),
@@ -265,5 +299,5 @@ export async function scanDetails(id: string) {
   log = log
     .replace(/(ghp_|github_pat_)[A-Za-z0-9_]+/g, "[REDACTED]")
     .replace(/(\[SECRET[^\n]*?)(?:→|—|:)\s*[^\n]+/g, "$1 [REDACTED]");
-  return { scan: meta, log, results };
+  return { scan: meta, log, results, phases };
 }

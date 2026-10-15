@@ -77,7 +77,7 @@ type Config struct {
 	Workers         int
 	Tokens          map[string]string
 	BugBountyHeader string
-	NoTimeout       bool   // disable all tool timeouts (run without deadlines)
+	NoTimeout       bool   // disable soft tool timeouts; hard source budgets remain
 	ResumeDir       string // path to existing scan dir to resume from
 	WordlistPath    string // DNS brute-force wordlist override (--wordlist)
 	ResolversPath   string // DNS resolvers file override (--resolvers)
@@ -92,10 +92,10 @@ func DefaultConfig() *Config {
 		Phases: PhasesConfig{
 			SubdomainEnum: true,
 			AliveCheck:    true,
-			PortScan:      true,
+			PortScan:      false,
 			URLDiscovery:  true,
 			JSAnalysis:    true,
-			VulnScan:      true,
+			VulnScan:      false,
 			Report:        true,
 			DirFuzz:       false, // opt-in: not all bug bounty programs allow directory fuzzing
 			Params:        false, // opt-in: parameter discovery can be slow/intrusive
@@ -119,7 +119,7 @@ func DefaultConfig() *Config {
 			},
 			"amass": {
 				Enabled: true, Path: "amass",
-				Timeout: 600, // 10 min cap — amass is slow by design
+				Timeout: 1800, // 10 min cap — amass is slow by design
 			},
 			"assetfinder": {
 				Enabled: true, Path: "assetfinder",
@@ -336,10 +336,10 @@ save_raw         = true
 [phases]
 subdomain_enum = true
 alive_check    = true
-port_scan      = true
+port_scan      = false
 url_discovery  = true
 js_analysis    = true
-vuln_scan      = true
+vuln_scan      = false
 report         = true
 
 [tokens]

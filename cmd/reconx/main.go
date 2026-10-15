@@ -3,11 +3,15 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/unsocialz2/reconx/internal/modules/report"
+	"github.com/unsocialz2/reconx/internal/store"
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"syscall"
@@ -16,7 +20,7 @@ import (
 	"github.com/unsocialz2/reconx/internal/pipeline"
 )
 
-var version = "v1.1.0"
+var version = "v1.2.0"
 
 type listFlag []string
 
@@ -30,6 +34,20 @@ func main() {
 }
 func run(args []string) error {
 	cfg := config.DefaultConfig()
+	profile := "standard"
+	for i, a := range args {
+		if strings.HasPrefix(a, "--profile=") {
+			profile = strings.TrimPrefix(a, "--profile=")
+		} else if a == "--profile" || a == "-profile" {
+			if i+1 >= len(args) {
+				return fmt.Errorf("--profile requires a value")
+			}
+			profile = args[i+1]
+		}
+	}
+	if err := config.ApplyProfile(cfg, profile); err != nil {
+		return err
+	}
 	// Load configuration first so explicitly supplied CLI options win regardless of order.
 	for i, arg := range args {
 		if strings.HasPrefix(arg, "--config=") || strings.HasPrefix(arg, "-config=") {
@@ -47,12 +65,16 @@ func run(args []string) error {
 	}
 	fs := flag.NewFlagSet("reconx", flag.ContinueOnError)
 	var domains, ips, asns, cloudAssets listFlag
-	var configPath, scopePath string
-	var initConfig, showVersion bool
+	var configPath, scopePath, reportDir, previousDir string
+	var initConfig, showVersion, showDoctor bool
 	fs.Var(&domains, "d", "Authorized domain (repeatable)")
 	fs.Var(&ips, "ip", "Authorized IP or CIDR (repeatable)")
 	fs.Var(&asns, "asn", "ASN for passive discovery (repeatable)")
 	fs.Var(&cloudAssets, "cloud-asset", "Explicitly authorized cloud URL (repeatable)")
+	fs.StringVar(&profile, "profile", profile, "Recon profile: quick, standard, deep or custom")
+	fs.BoolVar(&showDoctor, "doctor", false, "Read-only tool and settings preflight (JSON)")
+	fs.StringVar(&previousDir, "compare-with", "", "Compare an older checkpoint when rebuilding a report")
+	fs.StringVar(&reportDir, "report-only", "", "Rebuild HTML from an existing checkpoint without scanning")
 	fs.StringVar(&configPath, "config", "", "INI configuration path")
 	fs.StringVar(&scopePath, "scope", "", "Scope include/exclude file")
 	fs.StringVar(&cfg.Target.OrgName, "org", cfg.Target.OrgName, "Explicit GitHub organization")
@@ -76,6 +98,8 @@ func run(args []string) error {
 		skipValues[name] = &v
 		fs.BoolVar(&v, "skip-"+name, v, "Skip "+name+" phase")
 	}
+	fs.BoolVar(&cfg.Phases.PortScan, "ports", cfg.Phases.PortScan, "Opt in to port scanning when permitted")
+	fs.BoolVar(&cfg.Phases.VulnScan, "nuclei", cfg.Phases.VulnScan, "Opt in to Nuclei scanning when permitted")
 	fs.BoolVar(&cfg.Phases.DirFuzz, "fuzz", cfg.Phases.DirFuzz, "Enable directory discovery")
 	fs.BoolVar(&cfg.Phases.Params, "params", cfg.Phases.Params, "Enable parameter discovery")
 	fs.BoolVar(&cfg.Phases.Screenshots, "screenshots", cfg.Phases.Screenshots, "Enable screenshots")
@@ -106,8 +130,36 @@ func run(args []string) error {
 	if initConfig {
 		return config.WriteDefault("reconx.ini")
 	}
+	visited := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { visited[f.Name] = true })
+	if previousDir != "" && reportDir == "" {
+		return fmt.Errorf("--compare-with requires --report-only")
+	}
+	if reportDir != "" {
+		st, err := store.LoadSnapshot(filepath.Join(reportDir, "checkpoint.json"), func(string) bool { return true })
+		if err != nil {
+			return err
+		}
+		var manifest struct {
+			Target config.Target `json:"target"`
+		}
+		if raw, err := os.ReadFile(filepath.Join(reportDir, "manifest.json")); err == nil {
+			_ = json.Unmarshal(raw, &manifest)
+		}
+		if previousDir != "" {
+			if err := report.Compare(previousDir, reportDir); err != nil {
+				return err
+			}
+		}
+		return report.Generate(st, manifest.Target.Domains, reportDir)
+	}
 	for name, value := range skipValues {
-		*skips[name] = !*value
+		if visited["skip-"+name] {
+			*skips[name] = !*value
+		}
+	}
+	if showDoctor {
+		return doctor(cfg)
 	}
 	for key, value := range tokenValues {
 		cfg.Tokens[key] = *value

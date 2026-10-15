@@ -1,6 +1,8 @@
 package report
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -205,5 +207,88 @@ func TestRedactSecretValue_Long(t *testing.T) {
 	}
 	if !strings.HasPrefix(got, "AKIA") {
 		t.Errorf("should keep first 4 chars, got %q", got)
+	}
+}
+
+func TestReportContainsAllResultsAndMasksEvidence(t *testing.T) {
+	st := store.New("v1.2-preview")
+	st.AddSubdomainFromSource("app.example.test", "subfinder")
+	st.AddHost(&store.Host{Domain: "app.example.test", StatusCode: 200, Title: "</script><img src=x onerror=alert(1)>", TechStack: []string{"React", "nginx"}, Meta: map[string]string{"url": "https://app.example.test"}})
+	for i := 0; i < 6001; i++ {
+		st.AddURL(fmt.Sprintf("https://app.example.test/api/items/%d?record_id=%d", i, i))
+	}
+	st.AddJSFile("https://app.example.test/assets/app.js")
+	secret := "fixture-production-credential-1234567"
+	st.AddSecret(&store.Secret{Type: "API candidate", Value: secret, Source: "fixture", File: "https://app.example.test/assets/app.js"})
+	st.AddFinding(&store.Finding{Name: "Evidence fixture", Severity: "info", Target: "https://app.example.test", Evidence: "candidate=" + secret})
+	st.AddCoverage("Archive budget reached; partial results retained")
+	dir := t.TempDir()
+	manifest := `{"phases":{"ports":{"status":"skipped","reason":"opt-in disabled"},"vulnerabilities":{"status":"skipped","reason":"opt-in disabled"},"urls":{"status":"partial","reason":"source budget"}},"scope":{"InScope":["example.test"]}}`
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(manifest), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Generate(st, []string{"example.test"}, dir); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(filepath.Join(dir, "report.html"))
+	html := string(raw)
+	start := strings.Index(html, `<script id="scan-data" type="application/json">`) + len(`<script id="scan-data" type="application/json">`)
+	end := strings.Index(html[start:], "</script>") + start
+	var w workspace
+	if err := json.Unmarshal([]byte(html[start:end]), &w); err != nil {
+		t.Fatal(err)
+	}
+	if len(w.Data.URLs) != 6001 {
+		t.Fatalf("URLs=%d parameters=%d", len(w.Data.URLs), len(w.Parameters))
+	}
+	if strings.Contains(html, secret) || strings.Contains(html, "</script><img src=x") {
+		t.Fatal("unsafe embedded data")
+	}
+	if w.Phases["ports"].Status != "skipped" {
+		t.Fatal(w.Phases)
+	}
+	if preview := os.Getenv("RECONX_REPORT_PREVIEW"); preview != "" {
+		if err := os.MkdirAll(preview, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(preview, "report.html"), raw, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestScanDiffUsesUnobservedInsteadOfClaimingRemoval(t *testing.T) {
+	before, after := t.TempDir(), t.TempDir()
+	a, b := store.New("old"), store.New("new")
+	a.AddURL("https://example.test/old")
+	b.AddURL("https://example.test/new")
+	if err := a.SaveSnapshot(filepath.Join(before, "checkpoint.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.SaveSnapshot(filepath.Join(after, "checkpoint.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := Compare(before, after); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(after, "comparison.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var data struct {
+		Changes map[string]delta `json:"changes"`
+	}
+	if err := json.Unmarshal(raw, &data); err != nil {
+		t.Fatal(err)
+	}
+	if len(data.Changes["urls"].Added) != 1 || len(data.Changes["urls"].Unobserved) != 1 {
+		t.Fatal(string(raw))
+	}
+	if err := Generate(b, []string{"example.test"}, after); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = os.ReadFile(filepath.Join(after, "report.html"))
+	if !strings.Contains(string(raw), "previous_scan") {
+		t.Fatal("comparison not embedded")
 	}
 }

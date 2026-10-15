@@ -2,6 +2,7 @@ package subdomain
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/netip"
@@ -146,6 +147,9 @@ func (m *Module) Run(ctx context.Context) error {
 // the "why did I get fewer domains than subfinder alone?" answer at a glance.
 func (m *Module) printSourceSummary(board *logger.ProgressBoard) {
 	stats := board.SourceStats()
+	if raw, err := json.Marshal(stats); err == nil {
+		_ = store.AtomicWrite(filepath.Join(store.DataDir(m.outDir), "subdomain_source_summary.json"), raw, 0600)
+	}
 	for _, status := range stats {
 		if status.State == "error" || status.State == "timeout" || status.State == "skipped" {
 			m.store.AddCoverage("source " + status.Name + ": " + status.State + " — " + status.Message)
@@ -395,6 +399,16 @@ func (m *Module) runFindomain(ctx context.Context, domain string, board *logger.
 }
 
 func (m *Module) runAmass(ctx context.Context, domain string, board *logger.ProgressBoard) ([]string, []string) {
+	completed := filepath.Join(m.outDir, "tasks", domain+"_amass_completed.json")
+	var cached struct {
+		Tool     string
+		Lines    []string
+		Duration time.Duration
+	}
+	if raw, err := os.ReadFile(completed); err == nil && json.Unmarshal(raw, &cached) == nil {
+		board.Done("amass", len(cached.Lines))
+		return cached.Lines, nil
+	}
 	tcfg := m.cfg.Tools["amass"]
 	path := "amass"
 	if tcfg.Path != "" {
@@ -415,7 +429,7 @@ func (m *Module) runAmass(ctx context.Context, domain string, board *logger.Prog
 	outFile := filepath.Join(m.outDir, domain+"_amass_raw.txt")
 	args := []string{"enum", "-passive", "-d", domain, "-silent", "-o", outFile}
 	// Under --no-timeout, omit -timeout entirely so amass runs to completion.
-	if timeout > 0 {
+	if timeout > 0 && !m.cfg.NoTimeout && !runner.IsNoTimeout() {
 		amassMin := int(timeout / time.Minute)
 		if amassMin < 1 {
 			amassMin = 1
@@ -423,8 +437,14 @@ func (m *Module) runAmass(ctx context.Context, domain string, board *logger.Prog
 		args = append(args, "-timeout", fmt.Sprintf("%d", amassMin))
 	}
 
+	budget := 30 * time.Minute
+	if tcfg.TotalTimeout > 0 {
+		budget = time.Duration(tcfg.TotalTimeout) * time.Second
+	}
+	taskCtx, stop := context.WithTimeout(ctx, budget)
+	defer stop()
 	board.Heartbeat("amass")
-	r := runner.Run(ctx, path, args,
+	r := runner.Run(taskCtx, path, args,
 		runner.WithTimeout(timeout),
 		runner.WithStderrCallback(func(line string) { board.Heartbeat("amass") }))
 
@@ -456,6 +476,16 @@ func (m *Module) runAmass(ctx context.Context, domain string, board *logger.Prog
 		board.Fail("amass", r.DiagString())
 	} else {
 		board.Done("amass", len(results))
+	}
+	if r.Err == nil {
+		raw, err := json.Marshal(struct {
+			Tool     string
+			Lines    []string
+			Duration time.Duration
+		}{"amass", results, r.Duration})
+		if err == nil {
+			_ = store.AtomicWrite(completed, raw, 0600)
+		}
 	}
 	return results, r.Stderr
 }

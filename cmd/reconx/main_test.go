@@ -1,8 +1,11 @@
 package main
 
 import (
+	"encoding/json"
+	"github.com/unsocialz2/reconx/internal/store"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -44,5 +47,63 @@ func TestDomainValidationIsPure(t *testing.T) {
 		if !validDomain(v) {
 			t.Errorf("rejected %q", v)
 		}
+	}
+}
+
+func TestDefaultAndExplicitScannerPhasesWithoutTargetsBeingProbed(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		dir := t.TempDir()
+		ini := filepath.Join(dir, "config.ini")
+		if err := os.WriteFile(ini, []byte("[tool.naabu]\npath = /bin/true\n[tool.nuclei]\npath = /bin/true\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		args := []string{"--config", ini, "-d", "example.test", "--output", dir, "--skip-subs", "--skip-alive", "--skip-urls", "--skip-js", "--skip-cloud", "--skip-cors"}
+		if enabled {
+			args = append(args, "--ports", "--nuclei")
+		}
+		if err := run(args); err != nil {
+			t.Fatal(err)
+		}
+		paths, _ := filepath.Glob(filepath.Join(dir, "example.test-*", "manifest.json"))
+		raw, _ := os.ReadFile(paths[0])
+		var manifest struct {
+			Phases map[string]struct {
+				Status string `json:"status"`
+				Reason string `json:"reason"`
+			} `json:"phases"`
+		}
+		if err := json.Unmarshal(raw, &manifest); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"ports", "vulnerabilities"} {
+			state := manifest.Phases[name]
+			if !enabled && state.Reason != "disabled by configuration" {
+				t.Fatal(name, state)
+			}
+			if enabled && state.Status != "completed" {
+				t.Fatal(name, state)
+			}
+		}
+		events, err := os.ReadFile(filepath.Join(filepath.Dir(paths[0]), "events.jsonl"))
+		if err != nil || !strings.Contains(string(events), "phase.finished") {
+			t.Fatalf("events=%s %v", events, err)
+		}
+	}
+}
+func TestReportOnlyDoesNotLaunchPipeline(t *testing.T) {
+	dir := t.TempDir()
+	st := store.New("saved")
+	st.AddURL("https://example.test/?q=1")
+	if err := st.SaveSnapshot(filepath.Join(dir, "checkpoint.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"--report-only", dir}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "report.html")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "reconx.log")); !os.IsNotExist(err) {
+		t.Fatal("report-only unexpectedly ran pipeline")
 	}
 }

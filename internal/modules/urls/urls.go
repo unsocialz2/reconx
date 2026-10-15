@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -243,8 +242,11 @@ func (m *Module) runWayback(ctx context.Context, input string) []string {
 	m.log.Tool("waybackurls", fmt.Sprintf("%d domains", count))
 	m.log.ToolCmd("waybackurls", []string{}, fmt.Sprintf("[%d domains via stdin]", count))
 
-	r := runner.Run(ctx, path, nil,
-		runner.WithStdin(input),
+	budget := 30 * time.Minute
+	if tcfg.TotalTimeout > 0 {
+		budget = time.Duration(tcfg.TotalTimeout) * time.Second
+	}
+	r := runner.RunInputBatches(ctx, path, nil, input, 32, budget, "",
 		runner.WithUniqueLines(),
 		runner.WithTimeout(timeout),
 		runner.WithStderrCallback(func(line string) {
@@ -431,8 +433,11 @@ func (m *Module) runKatana(ctx context.Context, input string) []string {
 		timeout = 10 * time.Minute
 	}
 
-	r := runner.Run(ctx, "katana", args,
-		runner.WithStdin(input),
+	budget := 30 * time.Minute
+	if tcfg.TotalTimeout > 0 {
+		budget = time.Duration(tcfg.TotalTimeout) * time.Second
+	}
+	r := runner.RunInputBatches(ctx, "katana", args, input, 32, budget, "",
 		runner.WithUniqueLines(),
 		runner.WithTimeout(timeout),
 		runner.WithStderrCallback(func(line string) {
@@ -467,8 +472,11 @@ func (m *Module) runHakrawler(ctx context.Context, input string) []string {
 		timeout = 5 * time.Minute
 	}
 
-	r := runner.Run(ctx, "hakrawler", args,
-		runner.WithStdin(input),
+	budget := 30 * time.Minute
+	if tcfg.TotalTimeout > 0 {
+		budget = time.Duration(tcfg.TotalTimeout) * time.Second
+	}
+	r := runner.RunInputBatches(ctx, "hakrawler", args, input, 32, budget, "",
 		runner.WithUniqueLines(),
 		runner.WithTimeout(timeout),
 		runner.WithStderrCallback(func(line string) { m.log.Debug("hakrawler: %s", line) }))
@@ -488,24 +496,9 @@ func (m *Module) runHakrawler(ctx context.Context, input string) []string {
 func (m *Module) runGospider(ctx context.Context, input string) []string {
 	start := time.Now()
 
-	// gospider does NOT support '-S -' for stdin — it requires a real file.
-	// Write URLs to a temp file and pass the path.
-	tmpFile, err := os.CreateTemp("", "gospider-urls-*.txt")
-	if err != nil {
-		m.log.Warn("gospider: could not create temp file: %v", err)
-		return nil
-	}
-	defer os.Remove(tmpFile.Name())
-	if _, err := tmpFile.WriteString(input); err != nil {
-		tmpFile.Close()
-		m.log.Warn("gospider: could not write temp file: %v", err)
-		return nil
-	}
-	tmpFile.Close()
-
 	count := strings.Count(input, "\n") + 1
 	// -t = parallel sites, -c = concurrent requests per site, -d = depth
-	args := []string{"-S", tmpFile.Name(), "-t", "1", "-c", strconv.Itoa(m.workers()), "-d", "3", "--sitemap", "--robots"}
+	args := []string{"-S", "<batch-input>", "-t", "1", "-c", strconv.Itoa(m.workers()), "-d", "3", "--sitemap", "--robots"}
 	m.log.Tool("gospider", fmt.Sprintf("%d hosts", count))
 	m.log.ToolCmd("gospider", args, "")
 
@@ -515,7 +508,11 @@ func (m *Module) runGospider(ctx context.Context, input string) []string {
 		timeout = 5 * time.Minute
 	}
 
-	r := runner.Run(ctx, "gospider", args,
+	budget := 30 * time.Minute
+	if tcfg.TotalTimeout > 0 {
+		budget = time.Duration(tcfg.TotalTimeout) * time.Second
+	}
+	r := runner.RunInputBatches(ctx, "gospider", args, input, 32, budget, "-S",
 		runner.WithUniqueLines(),
 		runner.WithTimeout(timeout),
 		runner.WithStderrCallback(func(line string) { m.log.Debug("gospider: %s", line) }))

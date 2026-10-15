@@ -54,6 +54,27 @@ export default function NewScanForm({
         className="grid gap-4"
       >
         <label>
+          Recon profile
+          <select
+            value={options.profile || "standard"}
+            onChange={(e) =>
+              setOptions({
+                ...options,
+                profile: e.target.value as ScanConfig["profile"],
+              })
+            }
+            className="mt-2 block w-full rounded bg-slate-950 p-3"
+          >
+            <option value="quick">Quick · lower recon budgets</option>
+            <option value="standard">Standard</option>
+            <option value="deep">Deep · longer recon budgets</option>
+            <option value="custom">Custom</option>
+          </select>
+          <p className="text-xs text-slate-400">
+            Profiles do not enable ports or Nuclei.
+          </p>
+        </label>
+        <label>
           Authorized domains
           <textarea
             required
@@ -112,8 +133,8 @@ export default function NewScanForm({
           {(
             [
               ["skipSubs", "Skip subdomain discovery"],
-              ["skipPorts", "Skip port scan"],
-              ["skipVuln", "Skip nuclei"],
+              ["enablePorts", "Opt in: port scanning (only when permitted)"],
+              ["enableNuclei", "Opt in: Nuclei scanning (only when permitted)"],
               ["skipJs", "Skip JS analysis"],
               ["skipCors", "Skip CORS checks"],
               ["enableFuzz", "Enable directory discovery"],
