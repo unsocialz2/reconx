@@ -1428,6 +1428,7 @@
             ><button id="theme" aria-label="Toggle color theme">
               ☀️ Light mode</button
             ><button id="export-all">📥 Export JSON</button
+            ><button id="export-notes">📝 Testing notes</button
             ><button id="print">🖨️ Print</button>
           </div>
         </header>
@@ -1465,7 +1466,9 @@
           try {
             return new URL(
               raw.includes("://") ? raw : "https://" + raw,
-            ).hostname.toLowerCase();
+            ).hostname
+              .toLowerCase()
+              .replace(/\.$/, "");
           } catch {
             return "";
           }
@@ -1552,7 +1555,7 @@
           a.sources.push(s.source || "unknown");
       });
       arr(D.hosts).forEach((h) => {
-        const a = asset(h.domain);
+        const a = asset(hostOf(hostURL(h)));
         if (a) {
           a.endpoints.push(h);
           a.technologies = [
@@ -1580,6 +1583,8 @@
         const a = asset(hostOf(s.file || ""));
         if (a) a.secrets++;
       });
+      // A directory-only or name-only asset may have no URL/HTTP entry.
+      arr(SCAN_DATA.review_queue).forEach((p) => asset(p.host));
       arr(D.waf_results).forEach((w) => {
         const a = asset(hostOf(w.host));
         if (a) {
@@ -1679,8 +1684,49 @@
         tasks: "🧩",
         coverage: "⚠️",
         artifacts: "🧾",
+        queue: "🎯",
+        routes: "🧩",
       };
       const tables = {
+        queue: {
+          title: "Asset review queue",
+          note: "Review interest, not vulnerability severity. Ready observations come first, unverified evidence next, rate-limited/unavailable hosts last. Scores use route clues, candidates and JS; counts never prove impact. Open an asset for suggested checks.",
+          rows: arr(SCAN_DATA.review_queue),
+          cols: [
+            ["Host", "host"],
+            ["Queue", "priority"],
+            ["Interest /100", "score"],
+            ["Availability", "availability"],
+            ["URLs", "urls"],
+            ["Route groups", "endpoint_groups"],
+            ["JavaScript", "js_files"],
+            ["Candidates", "candidates"],
+            ["Why review", (r) => arr(r.reasons).join(" · ")],
+          ],
+          filter: "priority",
+          detail: "asset",
+        },
+        routes: {
+          title: "Endpoint route groups",
+          note: "Offline heuristic: numeric, UUID and long hex path segments become placeholders; origins and path case stay separate. Query values/fragments are omitted. Grouping does not prove equivalent behavior or route liveness. Methods are only shown when recorded, otherwise unknown.",
+          rows: arr(SCAN_DATA.endpoint_groups),
+          cols: [
+            ["Route template", "route"],
+            ["Origin", "origin"],
+            ["Host", "host"],
+            ["URLs", "observations"],
+            ["Query shapes", "query_shapes"],
+            ["Parameter names", (r) => arr(r.parameters).join(", ")],
+            [
+              "Observed methods",
+              (r) => arr(r.observed_methods).join(", ") || "unknown",
+            ],
+            ["Evidence", (r) => arr(r.evidence_sources).join(", ")],
+            ["Review clues", (r) => arr(r.signals).join(" · ")],
+          ],
+          filter: "host",
+          detail: "record",
+        },
         budgets: {
           title: "Source budgets",
           note: "Latest recorded plans. Estimates are heuristics. Explicit total_timeout wins; adaptive caps preserve partial results. Successful cached batches are replayed, even after an execution budget expires.",
@@ -1999,10 +2045,12 @@
       }
       const definitions = [
         ["overview", "Overview"],
+        ["queue", "Review queue"],
         ["assets", "Assets"],
         ["subdomains", "Subdomains"],
         ["hosts", "HTTP endpoints"],
         ["urls", "URLs"],
+        ["routes", "Route groups"],
         ["js", "JavaScript"],
         ["params", "Parameters"],
         ["ports", "Ports (opt in)"],
@@ -2029,6 +2077,8 @@
         reviews = JSON.parse(localStorage.getItem(reviewKey) || "{}");
       } catch {}
       function recordKey(r) {
+        if (r.origin && r.route)
+          return JSON.stringify(["route", r.origin, r.route]);
         return JSON.stringify([
           r.template || r.type || r.name,
           r.target || r.file || r.url,
@@ -2348,7 +2398,12 @@
       }
       function openRecord(r) {
         const el = drawer(
-          r.name || r.type || r.url || r.Name || "Evidence & metadata",
+          r.name ||
+            r.type ||
+            r.url ||
+            r.route ||
+            r.Name ||
+            "Evidence & metadata",
         );
         el.append(
           node(
@@ -2357,6 +2412,39 @@
             "muted",
           ),
         );
+        if (r.origin && r.route) {
+          el.append(
+            node("h2", "🧩 Route template"),
+            node("pre", r.origin + r.route),
+          );
+          el.append(
+            node(
+              "p",
+              `${r.observations} collected URLs · ${r.query_shapes} query shapes · methods: ${arr(r.observed_methods).join(", ") || "unknown"}`,
+              "muted",
+            ),
+          );
+          el.append(
+            node(
+              "p",
+              "A template groups similar-looking evidence. It does not establish equivalent behavior, authorization or route availability. Parameter values are omitted; originals remain in collected URL evidence.",
+              "muted",
+            ),
+          );
+          const explore = node(
+            "button",
+            "🔗 Explore collected URLs for this host",
+          );
+          explore.onclick = () => {
+            $("#drawer").hidden = true;
+            show("urls");
+            states.urls.query = r.host;
+            states.urls.search.value = r.host;
+            states.urls.page = 0;
+            draw("urls");
+          };
+          el.append(explore);
+        }
         if (r.status_code !== undefined) {
           const state = httpState(r.status_code);
           const summary = node("div", undefined, "endpoint-summary");
@@ -2486,6 +2574,36 @@
           stats.append(d);
         }
         el.append(stats);
+        const plan = arr(SCAN_DATA.review_queue).find((p) => p.host === a.host);
+        if (plan) {
+          const panel = node("div", undefined, "panel");
+          panel.append(
+            node("h2", "🎯 Review plan"),
+            node(
+              "p",
+              `${plan.priority} · interest ${plan.score}/100 · ${plan.availability}`,
+              "muted",
+            ),
+          );
+          panel.append(
+            node(
+              "p",
+              "A heuristic review order, not a severity or vulnerability assessment. Host observations do not verify every route.",
+              "muted",
+            ),
+          );
+          const reasons = node("ul");
+          arr(plan.reasons).forEach((reason) =>
+            reasons.append(node("li", reason)),
+          );
+          panel.append(reasons, node("h3", "Suggested checks"));
+          const checks = node("ul");
+          arr(plan.suggested_checks).forEach((check) =>
+            checks.append(node("li", check)),
+          );
+          panel.append(checks);
+          el.append(panel);
+        }
         const chips = node("div", undefined, "chipset");
         a.technologies.forEach((t) => chips.append(pill(t)));
         chips.append(
@@ -2505,6 +2623,7 @@
         }
         for (const [id, label] of [
           ["urls", "Explore URLs"],
+          ["routes", "Explore route groups"],
           ["js", "Explore JavaScript"],
           ["params", "Explore parameters"],
           ["findings", "Review scanner matches"],
@@ -2569,6 +2688,12 @@
           "reconx-report-data.json",
           JSON.stringify({ ...SCAN_DATA, reviews }, null, 2),
           "application/json",
+        );
+      $("#export-notes").onclick = () =>
+        download(
+          "testing_notes.md",
+          SCAN_DATA.testing_notes || "",
+          "text/markdown;charset=utf-8",
         );
       $("#print").onclick = () => window.print();
       const overview = heading(
@@ -2774,6 +2899,14 @@
         ["critical", "high"].includes(String(f.severity).toLowerCase()),
       );
       for (const [id, icon, label, count, note] of [
+        [
+          "queue",
+          "🎯",
+          "Prioritized asset review",
+          arr(SCAN_DATA.review_queue).filter((a) => a.priority === "review")
+            .length,
+          "Explainable review order with suggested checks",
+        ],
         [
           "findings",
           "🎯",

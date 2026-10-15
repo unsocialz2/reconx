@@ -517,7 +517,7 @@ func (p *Pipeline) removeRawOutputs() error {
 	if err != nil {
 		return err
 	}
-	keep := map[string]bool{"checkpoint.json": true, "manifest.json": true, "results.json": p.cfg.Output.JSONReport, "report.html": p.cfg.Output.HTMLReport, "reconx.log": true, "screenshots": true, "tasks": true, "events.jsonl": true}
+	keep := map[string]bool{"checkpoint.json": true, "manifest.json": true, "results.json": p.cfg.Output.JSONReport, "report.html": p.cfg.Output.HTMLReport, "review_queue.json": p.cfg.Output.HTMLReport, "endpoint_groups.json": p.cfg.Output.HTMLReport, "testing_notes.md": p.cfg.Output.HTMLReport, "reconx.log": true, "screenshots": true, "tasks": true, "events.jsonl": true}
 	for _, e := range entries {
 		if !keep[e.Name()] {
 			if err := os.RemoveAll(filepath.Join(p.outDir, e.Name())); err != nil {

@@ -146,6 +146,16 @@ MIT — see [LICENSE](LICENSE). Use only within an authorized assessment scope.
 
 The report includes the entire collected dataset, paginated tables, global table search and sorting, complete matching CSV exports, a masked JSON export, asset profiles, HTTP endpoints, ports, networks, JavaScript, parameter mappings, scanner/secret candidates, CORS/cloud/WAF observations, source/phase coverage, batch journals, screenshots and raw evidence links. Known secret values are scrubbed from embedded evidence and metadata. Raw linked files remain private.
 
+#### Review queue, route groups and testing notes
+
+HTML report generation (including `--report-only`) also writes `review_queue.json`, `endpoint_groups.json` and `testing_notes.md` beside the report. These are offline derivatives of saved evidence: they do not send requests, enable tools or change scan order. They are retained with `--save-raw=false`. The report includes searchable/exportable **🎯 Review queue** and **🧩 Route groups** sections, asset-specific suggested checks, and a **📝 Testing notes** download that works from the standalone HTML file.
+
+Review order separates reachable host observations (`review`), unverified/unknown/client-error evidence (`explore`), and hosts with only rate-limited/server-error observations (`deferred`). An asset with multiple endpoints can have both reachable and unavailable observations: inspect its endpoint list. A host observation never verifies every archived route. The interest score is explainable and capped at 100: 25 for any scanner/secret candidates, 10 per distinct route/parameter clue, one per route group up to 10, 10 for any JS files, and 15 for a reachable host observation. It is **not severity, confidence, exploitability or proof of a vulnerability**. Repeated candidate/URL counts cannot inflate each category without bound.
+
+Route grouping keeps scheme, non-default port, path case, repeated/trailing slashes and encoded separators distinct. Standalone numeric, UUID and long hexadecimal path segments become `{number}`, `{uuid}` and `{hex}`; literal versions such as `v1` stay intact. Parameter names and query-shape counts are retained; parameter values/fragments are omitted from the generated group examples and notes. Methods are listed only when recorded by parameter discovery; an empty list means unknown, not GET. These are naming heuristics, not proof that routes behave alike. Original URLs remain in the checkpoint and full report.
+
+`testing_notes.md` contains current phase states, historical coverage notes, the complete review queue with suggested checks, and route groups. Known detected secret values are masked in all three generated files. They remain owner-private and can contain other sensitive target metadata. The generated notes are replaced when rebuilding; keep personal edits separately, or use the report's local annotations and JSON export.
+
 Candidates can be marked reviewed, false positive or confirmed, with notes. Those labels are manual local browser annotations, not automated verification. Export JSON to preserve or move your annotations.
 
 Rebuild a saved scan's report without performing new network tests:

@@ -17,19 +17,22 @@ import (
 )
 
 type workspace struct {
-	Runs        []runReport            `json:"runs,omitempty"`
-	Comparison  any                    `json:"comparison,omitempty"`
-	Version     string                 `json:"version"`
-	Targets     []string               `json:"targets"`
-	GeneratedAt string                 `json:"generated_at"`
-	Data        store.Snapshot         `json:"data"`
-	Phases      map[string]phaseReport `json:"phases"`
-	Scope       any                    `json:"scope"`
-	Sources     []logger.ToolStatus    `json:"sources"`
-	Tasks       []taskReport           `json:"tasks"`
-	Parameters  []parameterReport      `json:"parameters"`
-	Screenshots map[string]string      `json:"screenshots"`
-	Artifacts   []artifactReport       `json:"artifacts"`
+	TestingNotes   string                 `json:"testing_notes"`
+	ReviewQueue    []reviewAsset          `json:"review_queue"`
+	EndpointGroups []endpointGroup        `json:"endpoint_groups"`
+	Runs           []runReport            `json:"runs,omitempty"`
+	Comparison     any                    `json:"comparison,omitempty"`
+	Version        string                 `json:"version"`
+	Targets        []string               `json:"targets"`
+	GeneratedAt    string                 `json:"generated_at"`
+	Data           store.Snapshot         `json:"data"`
+	Phases         map[string]phaseReport `json:"phases"`
+	Scope          any                    `json:"scope"`
+	Sources        []logger.ToolStatus    `json:"sources"`
+	Tasks          []taskReport           `json:"tasks"`
+	Parameters     []parameterReport      `json:"parameters"`
+	Screenshots    map[string]string      `json:"screenshots"`
+	Artifacts      []artifactReport       `json:"artifacts"`
 }
 type runReport struct {
 	Status     string           `json:"status"`
@@ -72,6 +75,7 @@ func generateWorkspace(st *store.Store, targets []string, outDir string) error {
 	secrets := snap.Secrets
 	snap.Secrets = redactSecrets(snap.Secrets)
 	w := workspace{Version: "1.2.0", Targets: targets, GeneratedAt: time.Now().UTC().Format(time.RFC3339), Data: snap, Phases: map[string]phaseReport{}, Screenshots: map[string]string{}}
+	w.ReviewQueue, w.EndpointGroups = buildReview(snap)
 	var manifest struct {
 		Runs   []runReport            `json:"runs"`
 		Phases map[string]phaseReport `json:"phases"`
@@ -132,6 +136,17 @@ func generateWorkspace(st *store.Store, targets []string, outDir string) error {
 		}
 		return nil
 	})
+	// Include the derived artifacts on the first report generation too.
+	for _, name := range []string{"review_queue.json", "endpoint_groups.json", "testing_notes.md"} {
+		found := false
+		for _, artifact := range w.Artifacts {
+			found = found || artifact.Name == name
+		}
+		if !found {
+			w.Artifacts = append(w.Artifacts, artifactReport{name, true})
+		}
+	}
+	sort.Slice(w.Artifacts, func(i, j int) bool { return w.Artifacts[i].Name < w.Artifacts[j].Name })
 	entries, _ := os.ReadDir(filepath.Join(outDir, "screenshots"))
 	for _, entry := range entries {
 		if !entry.IsDir() {
@@ -206,6 +221,10 @@ func generateWorkspace(st *store.Store, targets []string, outDir string) error {
 		}
 	}
 	scrub(reflect.ValueOf(&w).Elem())
+	w.TestingNotes = string(testingNotes(w))
+	if err := writeReviewArtifacts(w, outDir); err != nil {
+		return err
+	}
 	raw, err := json.Marshal(w)
 	if err != nil {
 		return err

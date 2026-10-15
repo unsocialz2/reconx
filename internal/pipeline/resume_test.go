@@ -103,4 +103,9 @@ func TestDisabledToolAndExportControls(t *testing.T) {
 	if _, err = os.Stat(filepath.Join(p.outDir, "checkpoint.json")); err != nil {
 		t.Fatal("private checkpoint missing")
 	}
+	for _, name := range []string{"testing_notes.md", "endpoint_groups.json", "review_queue.json"} {
+		if _, err = os.Stat(filepath.Join(p.outDir, name)); err != nil {
+			t.Fatal("raw-output cleanup removed review artifact", name, err)
+		}
+	}
 }

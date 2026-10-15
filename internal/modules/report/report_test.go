@@ -259,12 +259,24 @@ func TestReportContainsAllResultsAndMasksEvidence(t *testing.T) {
 	if w.Phases["ports"].Status != "skipped" {
 		t.Fatal(w.Phases)
 	}
+	if len(w.EndpointGroups) != 1 || w.EndpointGroups[0].Count != 6001 || len(w.ReviewQueue) != 9 || !strings.Contains(w.TestingNotes, "source budget") {
+		t.Fatal("missing derived review data", len(w.EndpointGroups), len(w.ReviewQueue))
+	}
 	if preview := os.Getenv("RECONX_REPORT_PREVIEW"); preview != "" {
 		if err := os.MkdirAll(preview, 0700); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.WriteFile(filepath.Join(preview, "report.html"), raw, 0600); err != nil {
 			t.Fatal(err)
+		}
+		for _, name := range []string{"testing_notes.md", "review_queue.json", "endpoint_groups.json"} {
+			data, err := os.ReadFile(filepath.Join(dir, name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(preview, name), data, 0600); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 }
