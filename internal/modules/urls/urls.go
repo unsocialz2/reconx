@@ -2,11 +2,16 @@ package urls
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/unsocialz2/reconx/pkg/util"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -58,10 +63,12 @@ func (m *Module) Run(ctx context.Context) error {
 		domainList = append(domainList, h.Domain)
 	}
 
+	aliveURLs = util.Deduplicate(aliveURLs)
+	domainList = util.Deduplicate(domainList)
 	urlInput := strings.Join(aliveURLs, "\n")
 	domInput := strings.Join(domainList, "\n")
 
-	m.log.Info("URL discovery: %d live hosts → running all tools in parallel", len(hosts))
+	m.log.Info("URL discovery: %d live hosts → parallel core sources, budgeted ParamSpider enrichment", len(hosts))
 	board := m.log.NewProgressBoard()
 	m.board = board
 
@@ -93,53 +100,102 @@ func (m *Module) Run(ctx context.Context) error {
 		{"katana", "katana", true, m.runKatana},
 		{"hakrawler", "hakrawler", true, m.runHakrawler},
 		{"gospider", "gospider", true, m.runGospider},
-		{"paramspider", "paramspider", false, m.runParamSpider},
+
 		{"otx-api", "", false, m.runOTX}, // HTTP only
 	}
 
-	var (
-		mu      sync.Mutex
-		wg      sync.WaitGroup
-		totalBy = make(map[string]int)
-	)
-
+	var coreWG sync.WaitGroup
+	ready := make(chan struct{})
+	var readyOnce sync.Once
+	paramCtx, cancelParam := context.WithCancelCause(ctx)
+	defer cancelParam(nil)
+	paramDone := make(chan struct{})
+	if m.cfg.ToolAvailable("paramspider") {
+		board.Register("paramspider", "waiting for URL discovery results")
+		go func() {
+			defer close(paramDone)
+			select {
+			case <-ready:
+			case <-ctx.Done():
+			}
+			m.runParamSpider(paramCtx, domInput)
+		}()
+	} else {
+		board.Skip("paramspider", "disabled or unavailable")
+		close(paramDone)
+	}
 	for _, t := range tools {
 		t := t
-
-		// Binary availability check
 		if t.binKey != "" && !m.cfg.ToolAvailable(t.binKey) {
-			m.log.ToolSkipped(t.name,
-				fmt.Sprintf("not found — install: go install .../%s@latest", t.binKey))
+			board.Skip(t.name, "disabled or unavailable")
+			m.log.ToolSkipped(t.name, "disabled or unavailable")
 			continue
 		}
-
 		input := domInput
 		if t.useURL {
 			input = urlInput
 		}
-
 		board.Register(t.name, fmt.Sprintf("%d hosts", len(aliveURLs)))
-		wg.Add(1)
+		coreWG.Add(1)
 		go func() {
-			defer wg.Done()
-			results := t.fn(ctx, input)
-
-			var filtered []string
-			for _, u := range results {
-				if m.scope.IsInScope(u) {
-					filtered = append(filtered, u)
+			defer coreWG.Done()
+			var mu sync.Mutex
+			var failures []*runner.Result
+			toolCtx := runner.WithObserver(ctx, func(r *runner.Result) {
+				if r.Err != nil {
+					mu.Lock()
+					failures = append(failures, r)
+					mu.Unlock()
+				}
+			})
+			toolCtx = runner.WithProcessObserver(toolCtx, func(pid int, alive bool) { board.Process(t.name, pid, alive) })
+			results := t.fn(toolCtx, input)
+			filtered := util.Deduplicate(m.scope.FilterList(results))
+			m.store.AddURLs(filtered)
+			if len(filtered) > 0 {
+				readyOnce.Do(func() { close(ready) })
+			}
+			if len(failures) > 0 {
+				if len(failures) == 1 && failures[0].IsTimeout() {
+					board.Timeout(t.name, len(filtered))
+				} else if len(filtered) == 0 {
+					board.Fail(t.name, failures[0].DiagString())
+				} else {
+					board.Partial(t.name, failures[0].DiagString())
 				}
 			}
-
-			mu.Lock()
-			added := m.store.AddURLs(filtered)
-			totalBy[t.name] = added
 			board.DoneIfRunning(t.name, len(filtered))
-			mu.Unlock()
 		}()
 	}
-	wg.Wait()
+	coreWG.Wait()
+	readyOnce.Do(func() { close(ready) })
+	// ParamSpider is enrichment, not an unbounded barrier before JS analysis.
+	m.waitForEnrichment(ctx, paramDone, cancelParam)
 	board.Stop()
+	var incomplete []error
+	m.log.Info("URL Discovery source summary:")
+	stats := board.SourceStats()
+	for _, status := range stats {
+		label := status.State
+		if label == "done" {
+			label = "completed"
+		}
+		detail := fmt.Sprintf("%d URLs", status.Count)
+		if status.Total > 0 {
+			detail = status.ProgressText()
+		}
+		m.log.Info("  %-14s %-9s — %s (%s)", status.Name, label, detail, status.Elapsed(time.Now()).Round(time.Second))
+		if status.State == "timeout" || status.State == "partial" || status.State == "error" {
+			reason := fmt.Sprintf("URL source %s: %s — %s; %s", status.Name, label, detail, status.Message)
+			m.store.AddCoverage(reason)
+			incomplete = append(incomplete, errors.New(reason))
+		}
+	}
+	if data, err := json.MarshalIndent(stats, "", "  "); err == nil {
+		if err := store.AtomicWrite(filepath.Join(store.DataDir(m.outDir), "url_discovery_summary.json"), data, 0600); err != nil {
+			incomplete = append(incomplete, err)
+		}
+	}
 
 	// Classify into buckets
 	total := len(m.store.GetURLs())
@@ -164,8 +220,10 @@ func (m *Module) Run(ctx context.Context) error {
 		m.log.Info("urls_nowaf.txt → %d URLs (non-WAF hosts)", len(nowafURLs))
 	}
 
-	m.log.PhaseComplete("URL Discovery", total, time.Since(start))
-	return nil
+	if len(incomplete) == 0 {
+		m.log.PhaseComplete("URL Discovery", total, time.Since(start))
+	}
+	return errors.Join(incomplete...)
 }
 
 func (m *Module) runWayback(ctx context.Context, input string) []string {
@@ -220,16 +278,21 @@ func (m *Module) runWaymore(ctx context.Context, input string) []string {
 		all []string
 		mu  sync.Mutex
 		wg  sync.WaitGroup
-		sem = make(chan struct{}, 5) // max 5 concurrent waymore instances
+		sem = make(chan struct{}, m.workers())
 	)
 
+schedule:
 	for _, d := range rootDomains {
 		d := d
 		if d == "" {
 			continue
 		}
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			break schedule
+		}
 		wg.Add(1)
-		sem <- struct{}{}
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
@@ -269,7 +332,7 @@ func (m *Module) runGAU(ctx context.Context, input string) []string {
 		all []string
 		mu  sync.Mutex
 		wg  sync.WaitGroup
-		sem = make(chan struct{}, 3) // max 3 concurrent gau instances
+		sem = make(chan struct{}, m.workers())
 	)
 
 	tcfg := m.cfg.Tools["gau"]
@@ -278,14 +341,19 @@ func (m *Module) runGAU(ctx context.Context, input string) []string {
 		timeout = 3 * time.Minute
 	}
 
+schedule:
 	for _, d := range rootDomains {
 		d := d
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			break schedule
+		}
 		wg.Add(1)
-		sem <- struct{}{}
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			args := []string{"--subs", "--threads", "5", "--providers", "wayback,commoncrawl,otx,urlscan"}
+			args := []string{"--subs", "--threads", "1", "--providers", "wayback,commoncrawl,otx,urlscan"}
 			m.log.ToolCmd("gau", append(args, d), "")
 			r := runner.Run(ctx, "gau", append(args, d),
 				runner.WithUniqueLines(),
@@ -312,7 +380,7 @@ func (m *Module) runGAUPlus(ctx context.Context, input string) []string {
 		all []string
 		mu  sync.Mutex
 		wg  sync.WaitGroup
-		sem = make(chan struct{}, 3)
+		sem = make(chan struct{}, m.workers())
 	)
 
 	tcfg := m.cfg.Tools["gauplus"]
@@ -321,14 +389,19 @@ func (m *Module) runGAUPlus(ctx context.Context, input string) []string {
 		timeout = 3 * time.Minute
 	}
 
+schedule:
 	for _, d := range rootDomains {
 		d := d
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			break schedule
+		}
 		wg.Add(1)
-		sem <- struct{}{}
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			args := []string{"-subs", "-t", "5", "-random-agent"}
+			args := []string{"-subs", "-t", "1", "-random-agent"}
 			r := runner.Run(ctx, "gauplus", append(args, d),
 				runner.WithUniqueLines(),
 				runner.WithTimeout(timeout),
@@ -349,7 +422,7 @@ func (m *Module) runKatana(ctx context.Context, input string) []string {
 	start := time.Now()
 	count := strings.Count(input, "\n") + 1
 	tcfg := m.cfg.Tools["katana"]
-	args := append([]string{"-list", "-"}, tcfg.Flags...)
+	args := runner.MergeFlags(append([]string{"-list", "-"}, tcfg.Flags...), []string{"-c", strconv.Itoa(m.workers()), "-p", "1"})
 	m.log.Tool("katana", fmt.Sprintf("%d hosts — deep crawl (headless JS)", count))
 	m.log.ToolCmd("katana", args, fmt.Sprintf("[%d hosts via stdin]", count))
 
@@ -384,7 +457,7 @@ func (m *Module) runKatana(ctx context.Context, input string) []string {
 func (m *Module) runHakrawler(ctx context.Context, input string) []string {
 	start := time.Now()
 	count := strings.Count(input, "\n") + 1
-	args := []string{"-subs", "-u", "-insecure"}
+	args := []string{"-subs", "-u", "-insecure", "-t", strconv.Itoa(m.workers())}
 	m.log.Tool("hakrawler", fmt.Sprintf("%d hosts", count))
 	m.log.ToolCmd("hakrawler", args, fmt.Sprintf("[%d hosts via stdin]", count))
 
@@ -432,7 +505,7 @@ func (m *Module) runGospider(ctx context.Context, input string) []string {
 
 	count := strings.Count(input, "\n") + 1
 	// -t = parallel sites, -c = concurrent requests per site, -d = depth
-	args := []string{"-S", tmpFile.Name(), "-c", "10", "-d", "3", "--sitemap", "--robots"}
+	args := []string{"-S", tmpFile.Name(), "-t", "1", "-c", strconv.Itoa(m.workers()), "-d", "3", "--sitemap", "--robots"}
 	m.log.Tool("gospider", fmt.Sprintf("%d hosts", count))
 	m.log.ToolCmd("gospider", args, "")
 
@@ -472,88 +545,35 @@ func (m *Module) runGospider(ctx context.Context, input string) []string {
 	return urls
 }
 
-func (m *Module) runParamSpider(ctx context.Context, input string) []string {
-	start := time.Now()
-	domains := splitLines(input)
-	m.log.Tool("paramspider", fmt.Sprintf("%d domains", len(domains)))
-
-	var (
-		all []string
-		mu  sync.Mutex
-		wg  sync.WaitGroup
-		sem = make(chan struct{}, 10) // 10 concurrent
-	)
-
-	tcfg := m.cfg.Tools["paramspider"]
-	timeout := time.Duration(tcfg.Timeout) * time.Second
-	if timeout == 0 {
-		timeout = 3 * time.Minute
-	}
-
-	for _, d := range domains {
-		d := d
-		if d == "" {
-			continue
-		}
-		wg.Add(1)
-		sem <- struct{}{}
-		go func() {
-			defer wg.Done()
-			defer func() { <-sem }()
-			// Use -s flag for silent output (replaces --quiet which doesn't exist)
-			args := []string{"-d", d, "-s"}
-			r := runner.Run(ctx, "paramspider", args,
-				runner.WithUniqueLines(),
-				runner.WithTimeout(timeout),
-				runner.WithStderrCallback(func(line string) { m.log.Debug("paramspider[%s]: %s", d, line) }))
-			if r.Err == nil || len(r.Lines) > 0 {
-				mu.Lock()
-				all = append(all, r.Lines...)
-				mu.Unlock()
-			}
-		}()
-	}
-	wg.Wait()
-	m.log.ToolDone("paramspider", len(all), time.Since(start))
-	return all
-}
-
 // runOTX queries AlienVault OTX API — no binary, pure HTTP
 func (m *Module) runOTX(ctx context.Context, input string) []string {
 	start := time.Now()
 	domains := splitLines(input)
 	m.log.Tool("otx-api", fmt.Sprintf("%d domains (AlienVault OTX)", len(domains)))
 
-	var (
-		all []string
-		mu  sync.Mutex
-		wg  sync.WaitGroup
-	)
-
-	sem := make(chan struct{}, 20) // max 20 concurrent OTX requests
-	for _, d := range domains {
-		d := d
-		if d == "" {
-			continue
+	var mu sync.Mutex
+	var all []string
+	var failures int
+	m.forEachDomain(ctx, util.Deduplicate(domains), func(d string) {
+		m.heartbeat("otx-api")
+		defer m.heartbeat("otx-api")
+		urls, err := fetchOTX(ctx, d, m.log)
+		mu.Lock()
+		defer mu.Unlock()
+		all = append(all, urls...)
+		if err != nil {
+			failures++
 		}
-		wg.Add(1)
-		sem <- struct{}{}
-		go func() {
-			defer wg.Done()
-			defer func() { <-sem }()
-			urls := fetchOTX(ctx, d, m.log)
-			mu.Lock()
-			all = append(all, urls...)
-			mu.Unlock()
-		}()
+	})
+	if failures > 0 && m.board != nil {
+		m.board.Partial("otx-api", fmt.Sprintf("%d HTTP requests failed or timed out", failures))
 	}
-	wg.Wait()
 
 	m.log.ToolDone("otx-api", len(all), time.Since(start))
 	return all
 }
 
-func fetchOTX(ctx context.Context, domain string, log *logger.Logger) []string {
+func fetchOTX(ctx context.Context, domain string, log *logger.Logger) ([]string, error) {
 	url := fmt.Sprintf(
 		"https://otx.alienvault.com/api/v1/indicators/domain/%s/url_list?limit=500&page=1",
 		domain)
@@ -567,13 +587,13 @@ func fetchOTX(ctx context.Context, domain string, log *logger.Logger) []string {
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		log.Debug("otx[%s]: %v", domain, err)
-		return nil
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
 		log.Debug("otx[%s]: HTTP %d", domain, resp.StatusCode)
-		return nil
+		return nil, fmt.Errorf("OTX HTTP %d", resp.StatusCode)
 	}
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 3*1024*1024))
@@ -591,7 +611,7 @@ func fetchOTX(ctx context.Context, domain string, log *logger.Logger) []string {
 		}
 	}
 	log.Debug("otx[%s]: %d URLs", domain, len(results))
-	return results
+	return results, nil
 }
 
 // classifyAndSave splits all discovered URLs into category files

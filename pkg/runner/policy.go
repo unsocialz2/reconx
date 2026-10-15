@@ -30,6 +30,12 @@ type Policy struct {
 type policyKey struct{}
 type observerKey struct{}
 type commandObserverKey struct{}
+type processObserverKey struct{}
+
+// WithProcessObserver reports subprocess start and reap, including quiet tools.
+func WithProcessObserver(ctx context.Context, fn func(pid int, alive bool)) context.Context {
+	return context.WithValue(ctx, processObserverKey{}, fn)
+}
 
 // WithCommandObserver reports the resolved executable and effective arguments.
 // Consumers must redact credentials before logging them.
@@ -45,6 +51,9 @@ func WithPolicy(ctx context.Context, p Policy) context.Context {
 	return context.WithValue(ctx, policyKey{}, &p)
 }
 func WithObserver(ctx context.Context, fn func(*Result)) context.Context {
+	if parent, ok := ctx.Value(observerKey{}).(func(*Result)); ok {
+		return context.WithValue(ctx, observerKey{}, func(r *Result) { parent(r); fn(r) })
+	}
 	return context.WithValue(ctx, observerKey{}, fn)
 }
 func toolPolicy(p *Policy, name string) (string, ToolPolicy, bool) {
@@ -118,9 +127,18 @@ func policyArgs(key string, args []string, p *Policy, t ToolPolicy) []string {
 	switch key {
 	case "httpx":
 		args = MergeFlags(args, []string{"-threads", n})
-	case "naabu", "nuclei", "katana":
+	case "katana":
+		args = MergeFlags(args, []string{"-c", n, "-p", "1"})
+	case "naabu", "nuclei":
 		args = MergeFlags(args, []string{"-c", n})
-	case "mantra", "ffuf", "feroxbuster":
+	case "gau":
+		// GAU/GAUPlus already fan out across hosts up to Workers subprocesses.
+		args = MergeFlags(args, []string{"--threads", "1"})
+	case "gauplus":
+		args = MergeFlags(args, []string{"-t", "1"})
+	case "gospider":
+		args = MergeFlags(args, []string{"-t", "1", "-c", n})
+	case "mantra", "ffuf", "feroxbuster", "hakrawler":
 		args = MergeFlags(args, []string{"-t", n})
 	}
 	if p.Header != "" {

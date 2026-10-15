@@ -85,3 +85,26 @@ For custom locations, set `RECONX_BIN_DIR`, `RECONX_TOOLS_DIR`, `RECONX_SETUP_DI
 - DNS brute force needs a wordlist. `dnsx` can use system DNS; puredns/shuffledns additionally need massdns and a resolvers file. The latter are optional and do not suppress the dnsx fallback when their prerequisites are missing.
 
 After updating, rebuild with `bash install.sh --cli-only` on a VPS. Scan manifests protect resume compatibility: if scope/tool settings changed, start a new output directory instead of reusing the old scan.
+
+## ParamSpider progress and runtime limits
+
+ParamSpider starts when a core URL source first returns useful URLs (or when all core sources finish). It prioritizes parameter-bearing URLs, hosts with discovered URLs, API hosts and application/login/admin hosts. At most 100 additional low-signal hosts are tried by default. It does not expand hosts to their parent domains.
+
+Add this section to `reconx.ini` to change the defaults (all times are seconds):
+
+```ini
+[tool.paramspider]
+enabled = true
+timeout = 300
+total_timeout = 2700
+late_timeout = 120
+fallback_hosts = 100
+```
+
+`timeout` applies per host. `total_timeout` caps the entire ParamSpider run at 45 minutes, including queued jobs, even under `--no-timeout`. Once core URL discovery finishes, `late_timeout` allows at most two additional minutes before stopping enrichment and continuing to JS. The first budget reached wins. Set `fallback_hosts = 0` to process only hosts with a useful signal; disable ParamSpider with `enabled = false`.
+
+Progress shows `850/2437 hosts | 1240 URLs`. Processed hosts count finished attempts; failed or timed-out attempts are disclosed. URLs stream into the results store, so cancellation preserves them. A budget stop, failed host or host-selection cap marks coverage **partial** and does not cancel the parent pipeline.
+
+URL source summaries are printed at phase end and saved in `data/url_discovery_summary.json`, including terminal status, counts and frozen start/finish times. A quiet live subprocess is shown as **running/silent**; lack of output alone no longer implies a stuck process.
+
+URL discovery uses `--workers` for local queues and runner slots. GAU/GAUPlus use one thread per host subprocess to avoid multiplying the worker limit; Katana crawls one input at a time with bounded request concurrency, and Gospider uses one site worker with bounded request concurrency.

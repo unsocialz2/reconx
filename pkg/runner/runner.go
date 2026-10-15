@@ -289,6 +289,11 @@ func Run(ctx context.Context, name string, args []string, opts ...Option) (resul
 		return &Result{Tool: name, Args: args, Err: fmt.Errorf("start: %w", err)}
 	}
 
+	if fn, ok := ctx.Value(processObserverKey{}).(func(int, bool)); ok {
+		fn(cmd.Process.Pid, true)
+		defer fn(cmd.Process.Pid, false)
+	}
+
 	var (
 		mu            sync.Mutex
 		stdoutLines   []string

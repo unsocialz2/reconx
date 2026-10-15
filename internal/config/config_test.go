@@ -218,3 +218,23 @@ func TestStripInlineComment(t *testing.T) {
 		}
 	}
 }
+
+func TestParamSpiderBudgetsLoadAndValidate(t *testing.T) {
+	cfg := DefaultConfig()
+	path := filepath.Join(t.TempDir(), "reconx.ini")
+	if err := os.WriteFile(path, []byte("[tool.paramspider]\ntotal_timeout = 1800\nlate_timeout = 60\nfallback_hosts = 0\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Load(cfg, path); err != nil {
+		t.Fatal(err)
+	}
+	tool := cfg.Tools["paramspider"]
+	if tool.TotalTimeout != 1800 || tool.LateTimeout != 60 || tool.FallbackHosts != 0 {
+		t.Fatal(tool)
+	}
+	tool.TotalTimeout = -1
+	cfg.Tools["paramspider"] = tool
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("negative budget accepted")
+	}
+}

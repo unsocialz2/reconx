@@ -279,3 +279,20 @@ func TestVersionSkipsBanner(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestProcessObserverAndNestedResultObservers(t *testing.T) {
+	var events []bool
+	var outer, inner int
+	ctx := WithObserver(context.Background(), func(*Result) { outer++ })
+	ctx = WithObserver(ctx, func(*Result) { inner++ })
+	ctx = WithProcessObserver(ctx, func(pid int, alive bool) {
+		if pid <= 0 {
+			t.Error(pid)
+		}
+		events = append(events, alive)
+	})
+	r := Run(ctx, "sh", []string{"-c", "sleep 0.02"})
+	if r.Err != nil || len(events) != 2 || !events[0] || events[1] || outer != 1 || inner != 1 {
+		t.Fatalf("result=%+v events=%v observers=%d/%d", r, events, outer, inner)
+	}
+}

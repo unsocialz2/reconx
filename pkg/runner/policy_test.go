@@ -32,7 +32,7 @@ func TestFlagsReplacePairsAndPreserveBooleanPositionals(t *testing.T) {
 }
 
 func TestEffectiveWorkerFlagsAndCommandObserver(t *testing.T) {
-	for _, tc := range []struct{ tool, flag string }{{"naabu", "-c"}, {"mantra", "-t"}, {"httpx", "-threads"}, {"nuclei", "-c"}, {"katana", "-c"}, {"ffuf", "-t"}} {
+	for _, tc := range []struct{ tool, flag string }{{"naabu", "-c"}, {"mantra", "-t"}, {"httpx", "-threads"}, {"nuclei", "-c"}, {"katana", "-c"}, {"ffuf", "-t"}, {"hakrawler", "-t"}, {"gospider", "-c"}} {
 		t.Run(tc.tool, func(t *testing.T) {
 			bin := filepath.Join(t.TempDir(), tc.tool)
 			if err := os.WriteFile(bin, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\"\n"), 0700); err != nil {
@@ -62,5 +62,26 @@ func TestEffectiveWorkerFlagsAndCommandObserver(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestURLToolConcurrencyDoesNotMultiplyWorkers(t *testing.T) {
+	for _, tc := range []struct {
+		tool, flag string
+		want       string
+	}{{"gau", "--threads", "1"}, {"gauplus", "-t", "1"}, {"katana", "-p", "1"}, {"gospider", "-t", "1"}} {
+		args := policyArgs(tc.tool, []string{tc.flag, "50"}, &Policy{Workers: 3}, ToolPolicy{})
+		seen := false
+		for i, a := range args {
+			if a == tc.flag {
+				seen = true
+				if i+1 >= len(args) || args[i+1] != tc.want {
+					t.Fatalf("%s: %v", tc.tool, args)
+				}
+			}
+		}
+		if !seen {
+			t.Fatal(tc.tool, args)
+		}
 	}
 }

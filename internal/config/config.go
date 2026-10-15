@@ -27,12 +27,15 @@ type Scope struct {
 
 // ToolConfig holds per-tool configuration
 type ToolConfig struct {
-	Enabled   bool
-	Path      string
-	Flags     []string
-	Timeout   int
-	RateLimit int
-	Extra     map[string]string
+	Enabled       bool
+	Path          string
+	Flags         []string
+	Timeout       int
+	RateLimit     int
+	TotalTimeout  int // hard total ParamSpider budget, seconds
+	LateTimeout   int // grace after core URL sources finish, seconds
+	FallbackHosts int // maximum low-signal ParamSpider hosts
+	Extra         map[string]string
 }
 
 // PhasesConfig controls which phases to run
@@ -188,7 +191,7 @@ func DefaultConfig() *Config {
 			},
 			"paramspider": {
 				Enabled: true, Path: "paramspider",
-				Timeout: 300,
+				Timeout: 300, TotalTimeout: 2700, LateTimeout: 120, FallbackHosts: 100,
 			},
 
 			// ── JS / Secrets ─────────────────────────────────────────────────
@@ -369,6 +372,13 @@ timeout = 3600   # 60 min — headless crawl
 enabled = true
 flags   = ["--threads", "50"]
 timeout = 3600
+
+[tool.paramspider]
+enabled = true
+timeout = 300         # per domain
+total_timeout = 2700  # hard budget, including --no-timeout
+late_timeout = 120    # maximum wait after core URL sources finish
+fallback_hosts = 100  # low-signal hosts; 0 disables fallback
 
 [tool.nuclei]
 enabled = true
@@ -555,6 +565,12 @@ func applyConfigValue(cfg *Config, section, key, value string) {
 				t.Timeout = parseInt(value)
 			case "rate_limit":
 				t.RateLimit = parseInt(value)
+			case "total_timeout":
+				t.TotalTimeout = parseInt(value)
+			case "late_timeout":
+				t.LateTimeout = parseInt(value)
+			case "fallback_hosts":
+				t.FallbackHosts = parseInt(value)
 			case "flags":
 				t.Flags = parseList(value)
 			}
@@ -660,7 +676,7 @@ func (c *Config) Validate() error {
 	}
 	rates := map[string]bool{"httpx": true, "nuclei": true, "naabu": true, "katana": true, "ffuf": true, "feroxbuster": true}
 	for name, t := range c.Tools {
-		if t.Timeout < 0 || t.RateLimit < 0 {
+		if t.Timeout < 0 || t.RateLimit < 0 || t.TotalTimeout < 0 || t.LateTimeout < 0 || t.FallbackHosts < 0 {
 			return fmt.Errorf("negative timeout/rate for %s", name)
 		}
 		if t.RateLimit > 0 && !rates[name] {
