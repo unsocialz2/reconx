@@ -93,27 +93,21 @@ func safeTarget(raw string) string {
 		segs := strings.Split(u.EscapedPath(), "/")
 		for i, segment := range segs {
 			decoded, err := url.PathUnescape(segment)
-			if err != nil {
-				segs[i] = "[redacted]"
-			} else if len(decoded) >= 24 && opaque(decoded) {
+			if err != nil || len(decoded) >= 24 {
 				segs[i] = "[redacted]"
 			}
 		}
 		return u.Scheme + "://" + u.Host + strings.Join(segs, "/")
 	}
+	// Some sources produce relative paths or malformed URLs; never retain
+	// query values in triage outputs even for these non-absolute inputs.
+	if i := strings.IndexAny(raw, "?#"); i >= 0 {
+		raw = raw[:i]
+	}
 	if len(raw) > 300 {
 		return raw[:120] + "...[truncated]"
 	}
 	return raw
-}
-
-func opaque(segment string) bool {
-	for _, ch := range segment {
-		if !((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_') {
-			return false
-		}
-	}
-	return true
 }
 
 func analyzeSubdomains(s store.Snapshot) []Item {
