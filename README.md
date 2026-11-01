@@ -38,45 +38,39 @@ Previously captured PNGs are reused, and each failed attempt is described in
 check policy/ownership before opening unknown assets. Gowitness still needs a
 working Chrome/Chromium runtime for live captures.
 
-### Fast inventory is the default
+### Inventory HTTPX performance (full discovery preserved)
 
-`--inventory` now defaults to a **speed-first, reduced-coverage** discovery
-preset. It runs the quickest passive sources (subfinder default providers,
-assetfinder, certspotter, hackertarget, rapiddns, subdomaincenter and urlscan)
-without slow amass enumeration, crt.sh, wordlist brute force, permutation or
-massdns expansion. It does not claim exhaustive discovery. If you need broader
-enumeration and can accept longer runtimes, add `--inventory-thorough`.
+`--inventory` now runs **all available subdomain enumeration sources**
+(including the existing slower sources); nothing is omitted to speed up HTTP
+fingerprinting. `--inventory-thorough` remains accepted as a compatibility
+alias but is no longer required.
 
-HTTP inventory uses larger httpx input batches and disables favicon hashing
-in fast mode; HTTP status, IP, server, page title and technology detection
-remain on. HTTP retry remains disabled in inventory, and HTTP-only wildcard
-scheme restrictions still apply. Bounded screenshot capture uses **4 browser
-workers by default**, configurable with `--screenshot-workers 1..8`; each
-origin has its own screenshot directory. Every 8 finished images are
-checkpointed to the manifest, then the final manifest is written.
+After discovery, ReconX sends the **entire permitted HTTP(S) endpoint list to
+one `httpx` process** instead of restarting it every 256 endpoints. The
+inventory HTTPX phase uses the binary's native concurrency and pacing defaults
+instead of ReconX injecting `--workers` or `--host-rps` as caps. Explicit
+`httpx` rate/flag settings in the configuration are still respected. The
+phase keeps status code, title, server, content length, technologies and
+redirect-location metadata, and retains strict scheme selection for
+HTTP-only wildcard scopes. Inventory disables redundant retry and favicon
+hashing requests; a slower or intermittently responsive endpoint may need
+manual follow-up.
 
 ```bash
-# Fast wildcard inventory using your existing ReconX binary.
-./reconx --inventory --scope-csv /path/to/scope.csv \
-  --workers 8 --screenshot-workers 4 --host-rps 2
+# All eligible wildcards; full discovery sources; one native httpx run:
+./reconx --inventory --scope-csv /path/to/scope.csv
 
-# Broader discovery when completeness matters more than speed:
-./reconx --inventory --inventory-thorough --scope-csv /path/to/scope.csv \
-  --workers 8 --screenshot-workers 4 --host-rps 2
-
-# Reuse existing HTTP observations without rediscovering:
-./reconx --inventory-repair ./reconx-output/EXISTING-SCAN \
-  --screenshot-workers 4
+# Reuse old HTTP results and capture screenshots only:
+./reconx --inventory-repair ./reconx-output/EXISTING-SCAN
 ```
 
-**Rate-limit caution:** `--host-rps` bounds supported HTTP probes,
-and may materially increase runtime for thousands of endpoints.
-Do not increase it beyond the bug bounty program's allowed traffic rate.
-Browser subrequests, remote passive APIs and HTTPX's rate behavior may not
-share the same global limiter; screenshot workers remain bounded but their
-requests are not guaranteed globally rate-limited. Higher concurrency costs
-more CPU/RAM and may overload targets. Unreachable/slow endpoints can be
-missed in the fast preset.
+There is no new global rate limit or fixed httpx worker cap imposed by
+ReconX for this mode. **This does not mean traffic is unlimited**:
+`httpx` has native defaults, local proxy and network behavior, and the
+program's rate/traffic policy still applies. If a program has a rate ceiling,
+set explicit tool limits and verify compliance before initiating active
+probing. Screenshot concurrency is separately controlled by
+`--screenshot-workers` and browsers can make secondary requests.
 
 ## Native wildcard inventory mode
 
@@ -95,7 +89,7 @@ It does **not** run URL discovery, JavaScript/secrets scanning, Nuclei, ports, d
 
 # One integrated ReconX run for all eligible wildcards:
 ./reconx --inventory --scope-csv /path/to/program-scope.csv \
-  --profile standard --workers 6 --host-rps 1 --output ./reconx-output
+  --profile standard --output ./reconx-output
 ```
 
 Outputs are created in a new scan directory under `--output`, for example:
