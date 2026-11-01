@@ -17,7 +17,7 @@ cd reconx
 bash install.sh
 ```
 
-Use your normal user account. On Linux, the installer asks for sudo access to install OS prerequisites. It supports apt-based systems (Ubuntu/Debian/Kali) and Fedora/dnf. On macOS, Homebrew and Apple's command-line tools must be available.
+**Run the installer as your normal login user, never with `sudo bash install.sh`.** On Linux, the installer asks for sudo access only when installing OS prerequisites or Chrome. An accidental root invocation now exits before creating root-owned Go binaries or tool directories. It supports apt-based systems (Ubuntu/Debian/Kali) and Fedora/dnf. On macOS, Homebrew and Apple's command-line tools must be available.
 
 ## What the script does
 
@@ -25,13 +25,14 @@ Use your normal user account. On Linux, the installer asks for sudo access to in
 - Uses a suitable existing Go/Node installation or downloads a user-local runtime with SHA-256 verification.
 - Builds ReconX both in the repository and in `~/.local/bin`.
 - Installs pinned subfinder, httpx, katana, dnsx, gau, and Gitleaks into `~/go/bin` by default. Naabu/Nuclei are optional with `--with-scanners`.
+- Installs a checksum-verified **gowitness v3.2.2** binary for screenshots and verifies its `scan single` flags. If Google Chrome or Chromium is missing on Ubuntu/Debian amd64, it installs official Google Chrome using apt. On other platforms, install a browser first or use `--skip-screenshots`.
 - Checks tool help output. Nuclei templates are downloaded only with `--with-scanners`.
 - Installs a checksum-verified SecLists DNS wordlist (5,000 names); preserves an existing custom wordlist.
 - Installs and builds the dashboard.
 - Runs offline Go, installer, and dashboard checks, plus a CLI smoke test with every scan phase disabled.
 - Configures PATH in your Bash/Zsh startup file and creates a dashboard launcher.
 
-Installation downloads dependencies and templates. It does **not** scan a target. Screenshots and additional optional scanners remain separate installs.
+Installation downloads dependencies and templates. It does **not** scan a target. Screenshot prerequisites are installed by default when supported; scanner binaries such as Naabu/Nuclei are still opt-in.
 
 ## Use it
 
@@ -57,6 +58,7 @@ Open **http://127.0.0.1:3000**. Keep the repository in place: the launcher uses 
 | `bash install.sh --binary-only` | Build/install only ReconX; requires existing Go 1.22+ |
 | `bash install.sh --skip-system-deps` | Skip apt/dnf/Homebrew when prerequisites are already installed |
 | `bash install.sh --skip-checks` | Skip test suites; still run the CLI smoke test |
+| `bash install.sh --skip-screenshots` | Opt out of gowitness and browser setup (for CLI-only/headless installs without screenshots) |
 | `bash install.sh --no-profile` | Keep shell startup files unchanged |
 | `bash install.sh --help` | Show all options |
 
@@ -70,7 +72,7 @@ Read the error and the log:
 cat ~/.config/reconx/install.log
 ```
 
-Fix the reported dependency/download problem and rerun `bash install.sh`. The installer saves runtime/build information in `~/.config/reconx/install-receipt.txt`.
+Fix the reported dependency/download problem and rerun `bash install.sh` **without sudo**. If you had previously run `sudo bash install.sh`, it may have created binaries under `/root`; those are separate from your login user's tools. A normal-user install provisions user-local Go and tools and sets PATH in your shell startup file. Source the installer-provided `~/.config/reconx/env.sh` for the current shell. The installer saves runtime/build information in `~/.config/reconx/install-receipt.txt`.
 
 ### Old binary or `--report-only` not recognized
 
@@ -93,6 +95,20 @@ Then, from the directory containing your scan's `reconx-output` folder, use the 
 This regenerates reports from the saved checkpoint without scanning. Run it as your normal user. `/home/...` is an absolute path; `./home/...` instead searches inside the current directory.
 
 For custom locations, set `RECONX_BIN_DIR`, `RECONX_TOOLS_DIR`, `RECONX_SETUP_DIR`, or `RECONX_RUNTIME_DIR`. `RECONX_GO` selects an existing Go executable; `RECONX_GO_VERSION` selects a release when Go needs downloading. The final output prints the actual installed paths.
+
+### Verifying screenshots without scanning any targets
+
+After installation, check the toolchain and browser versions:
+
+```bash
+source ~/.config/reconx/env.sh
+command -v go httpx gowitness google-chrome
+gowitness version
+gowitness scan single --help
+./reconx --doctor
+```
+
+On Ubuntu amd64, the normal installer configures `gowitness` and Chrome automatically. Using `--skip-system-deps` with no installed browser prevents automatic Chrome installation; rerun without that option, or install a browser yourself. The installer does not visit public websites to validate screenshots; run a permitted URL test yourself if needed. An enabled `--inventory` run will report missing `gowitness` rather than silently capturing nothing.
 
 ## Reading scan results
 
