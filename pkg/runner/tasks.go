@@ -170,7 +170,7 @@ func RunInputBatches(ctx context.Context, name string, args []string, input stri
 				break
 			}
 			temp = f.Name()
-			_, err = f.WriteString(batch + "\n")
+			_, err = f.WriteString(batch)
 			closeErr := f.Close()
 			if err != nil || closeErr != nil {
 				os.Remove(temp)
@@ -179,7 +179,7 @@ func RunInputBatches(ctx context.Context, name string, args []string, input stri
 			}
 			actual = MergeFlags(actual, []string{inputFlag, temp})
 		} else {
-			// Complete the last line for line-oriented subprocesses. Without a\n\t\t\t// newline, shell-style readers can silently drop the final host.\n\t\t\tbatchOpts = append(batchOpts, WithStdin(batch+"\n"))
+			batchOpts = append(batchOpts, WithStdin(batch))
 		}
 		result := Run(budget, name, actual, batchOpts...)
 		if temp != "" {
