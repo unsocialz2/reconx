@@ -60,6 +60,14 @@ func safeScreenshotTarget(host *store.Host, filter *scope.Filter) (string, strin
 // gowitness directory. Calls are serial to avoid a multi-browser burst.
 // Browser subrequests and JS redirects cannot be fully scope-constrained by
 // an HTTPS CONNECT proxy; program rules and third-party ownership still apply.
+// inventoryScreenshotArgs uses only flags supported by gowitness v3's
+// "scan single" command. An explicit URL keeps HTTP-only origins on HTTP.
+func inventoryScreenshotArgs(raw, directory string) []string {
+	return []string{"scan", "single", "--url", raw,
+		"--screenshot-path", directory, "--screenshot-format", "png",
+		"--timeout", "20", "--threads", "1"}
+}
+
 func (m *Module) RunInventory(ctx context.Context) error {
 	if !m.cfg.ToolAvailable("gowitness") {
 		return fmt.Errorf("inventory screenshots require gowitness v3 in PATH")
@@ -76,7 +84,7 @@ func (m *Module) RunInventory(ctx context.Context) error {
 	})
 	results := make([]InventoryScreenshot, 0, len(hosts))
 	done := map[string]bool{}
-	var completed int
+	var completed, failed, attempted int
 	// Persist progress after every target so interruption keeps mappings.
 	save := func() error {
 		body, err := json.MarshalIndent(results, "", "  ")
@@ -97,6 +105,7 @@ func (m *Module) RunInventory(ctx context.Context) error {
 			if err := save(); err != nil { return err }
 			continue
 		}
+		attempted++
 		sum := sha256.Sum256([]byte(raw))
 		key := hex.EncodeToString(sum[:10])
 		destDir := filepath.Join(root, key)
@@ -108,8 +117,9 @@ func (m *Module) RunInventory(ctx context.Context) error {
 		} else {
 			tmp := filepath.Join(destDir, ".raw")
 			if err := os.MkdirAll(tmp, 0700); err != nil { return err }
-			args := []string{"scan", "single", "--url", raw, "--screenshot-path", tmp,
-				"--screenshot-format", "png", "--timeout", "20", "--no-http", "--no-https"}
+			// gowitness v3 scan single accepts the provided full URL as-is.
+			// --no-http / --no-https exist on some other commands, not single.
+			args := inventoryScreenshotArgs(raw, tmp)
 			run := runner.Run(ctx, "gowitness", args, runner.WithTimeout(50*time.Second))
 			// The temporary directory contains screenshots for exactly one URL.
 			var found string
@@ -138,8 +148,11 @@ func (m *Module) RunInventory(ctx context.Context) error {
 		}
 		results = append(results, entry)
 		if entry.Status == "captured" { completed++ }
+		if entry.Status == "failed" { failed++ }
 		if err := save(); err != nil { return err }
 	}
-	m.log.Info("Inventory screenshots: %d/%d captured; manifest screenshots/inventory_manifest.json", completed, len(results))
-	return save()
+	m.log.Info("Inventory screenshots: %d/%d eligible captured (%d failed); manifest screenshots/inventory_manifest.json", completed, attempted, failed)
+	if err := save(); err != nil { return err }
+	if failed > 0 { return fmt.Errorf("inventory: %d/%d screenshot captures failed; see screenshots/inventory_manifest.json", failed, attempted) }
+	return nil
 }
