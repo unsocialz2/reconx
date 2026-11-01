@@ -14,6 +14,36 @@ The installer handles OS prerequisites, user-local Go/Node when needed, the CLI,
 
 Start the dashboard with `~/.local/bin/reconx-web`, or use `./reconx --help` from the repository. For CLI-only setup: `bash install.sh --cli-only`. See [INSTALLATION.md](INSTALLATION.md) for the short guide, options, and log locations.
 
+## Native wildcard inventory mode
+
+`--inventory` is a **built-in ReconX mode**, not a separate wrapper or tool. It accepts any HackerOne-compatible scope CSV, automatically selects **eligible wildcard assets only**, preserves explicit web exclusions and scheme-bound wildcard rules (including `http://*.example.org`), and runs just:
+
+1. Subdomain discovery on all wildcard roots
+2. HTTP(S) status, IP, title, server and technology fingerprinting on permitted origins
+3. Serial `gowitness` screenshots of reachable HTTP endpoints, with one stable filename per origin
+4. Offline, per-wildcard status and review-priority classification in HTML, JSON and CSV
+
+It does **not** run URL discovery, JavaScript/secrets scanning, Nuclei, ports, directory fuzzing, cloud enum, CORS, parameters, WAF or takeover scanning. All priorities are review heuristics, not security findings. Unavailable and rate-limited endpoints are deferred, and excluded/third-party assets require manual policy verification.
+
+```bash
+# Confirm all selected wildcards and exclusions without target traffic:
+./reconx --inventory --scope-csv /path/to/program-scope.csv --scope-preview
+
+# One integrated ReconX run for all eligible wildcards:
+./reconx --inventory --scope-csv /path/to/program-scope.csv \
+  --profile standard --workers 6 --host-rps 1 --output ./reconx-output
+```
+
+Outputs are created in a new scan directory under `--output`, for example:
+
+- `inventory/index.html` — sortable visual inventory with screenshots, technologies, HTTP groups and reasons
+- `inventory/subdomains_ranked.csv` — unique subdomains ranked for manual review
+- `inventory/endpoints.csv` — separate HTTP and HTTPS observations with codes and tech
+- `inventory/per_wildcard/<wildcard>/by_status/*.csv` and `by_priority/*.csv`
+- `screenshots/inventory_manifest.json` and `screenshots/inventory/<origin-hash>/screenshot.png`
+
+**Limitations:** Screenshot capture requires `gowitness` v3 and a working Chrome/Chromium runtime. A browser can load extra resources or follow JavaScript redirects outside the scan proxy's control; this mode serializes screenshots but cannot guarantee a global browser request limit or full third-party isolation. Redirects with unknown/off-scope destinations and rate-limited/5xx endpoints are not screenshot automatically. `--host-rps` applies to built-in HTTP requests, not necessarily all third-party scanner/browser subrequests. ReconX never adds a HackerOne identification header implicitly; follow each program's rules when required.
+
 ## CLI
 
 ```bash
