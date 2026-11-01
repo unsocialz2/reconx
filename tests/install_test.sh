@@ -232,11 +232,6 @@ bash "$FIXTURE/project/install.sh" --skip-system-deps --cli-only --skip-checks -
 printf 'custom-user-wordlist\n' > "$FIXTURE/setup/wordlists/subdomains.txt"
 bash "$FIXTURE/project/install.sh" --skip-system-deps --cli-only --skip-checks --no-profile --skip-screenshots > "$FIXTURE/dns-repeat.log" 2>&1
 grep -qx 'custom-user-wordlist' "$FIXTURE/setup/wordlists/subdomains.txt"
-rm "$FIXTURE/setup/wordlists/subdomains.txt"
-printf 'tampered\n' > "$FIXTURE/download/dns-wordlist.txt"
-if bash "$FIXTURE/project/install.sh" --skip-system-deps --cli-only --skip-checks --no-profile --skip-screenshots > "$FIXTURE/dns-bad-checksum.log" 2>&1;then echo 'DNS wordlist checksum mismatch accepted' >&2;exit 1;fi
-grep -q 'Checksum mismatch' "$FIXTURE/dns-bad-checksum.log"
-[[ ! -e "$FIXTURE/setup/wordlists/subdomains.txt" ]]
 # Screenshot setup: it should download the pinned binary once, verify its
 # checksum, and work with a detected Chrome without touching target hosts.
 bash "$FIXTURE/project/install.sh" --skip-system-deps --cli-only --skip-checks --no-profile > "$FIXTURE/screenshot-install.log" 2>&1
@@ -245,4 +240,9 @@ grep -q 'Screenshot dependencies ready:' "$FIXTURE/screenshot-install.log"
 bash "$FIXTURE/project/install.sh" --skip-system-deps --cli-only --skip-checks --no-profile > "$FIXTURE/screenshot-repeat.log" 2>&1
 grep -q 'gowitness 3.2.2 already installed' "$FIXTURE/screenshot-repeat.log"
 
+rm "$FIXTURE/setup/wordlists/subdomains.txt"
+printf 'tampered\n' > "$FIXTURE/download/dns-wordlist.txt"
+if bash "$FIXTURE/project/install.sh" --skip-system-deps --cli-only --skip-checks --no-profile --skip-screenshots > "$FIXTURE/dns-bad-checksum.log" 2>&1;then echo 'DNS wordlist checksum mismatch accepted' >&2;exit 1;fi
+grep -q 'Checksum mismatch' "$FIXTURE/dns-bad-checksum.log"
+[[ ! -e "$FIXTURE/setup/wordlists/subdomains.txt" ]]
 printf 'DNS wordlist installer checks passed.\n'
