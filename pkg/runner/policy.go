@@ -20,6 +20,10 @@ type ToolPolicy struct {
 	RateLimit int
 }
 type Policy struct {
+	// InventoryHTTPXFast leaves httpx concurrency and request pacing to
+	// the installed httpx binary (and explicitly configured tool flags).
+	// It does not remove scope filtering or disable an explicit tool rate cap.
+	InventoryHTTPXFast bool
 	RequestRate int
 	Tools       map[string]ToolPolicy
 	Workers     int
@@ -129,7 +133,7 @@ func policyArgs(key string, args []string, p *Policy, t ToolPolicy) []string {
 	}
 	args = MergeFlags(normalize(args), normalize(t.Flags))
 	rateLimit := t.RateLimit
-	if p.RequestRate > 0 && (rateLimit == 0 || rateLimit > p.RequestRate) {
+	if !(p.InventoryHTTPXFast && key == "httpx") && p.RequestRate > 0 && (rateLimit == 0 || rateLimit > p.RequestRate) {
 		rateLimit = p.RequestRate
 	}
 	if rateLimit > 0 {
@@ -149,7 +153,9 @@ func policyArgs(key string, args []string, p *Policy, t ToolPolicy) []string {
 	n := strconv.Itoa(p.Workers)
 	switch key {
 	case "httpx":
-		args = MergeFlags(args, []string{"-threads", n})
+		if !p.InventoryHTTPXFast {
+			args = MergeFlags(args, []string{"-threads", n})
+		}
 	case "katana":
 		args = MergeFlags(args, []string{"-c", n, "-p", "1"})
 	case "naabu", "nuclei":
