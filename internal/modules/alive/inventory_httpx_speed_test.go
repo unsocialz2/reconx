@@ -27,7 +27,7 @@ case " $* " in
   *" -threads "*) exit 42;;
 esac
 echo call >> "$RECONX_HTTPX_FIXTURE_CALLS"
-while IFS= read -r origin; do
+while IFS= read -r origin || [ -n "$origin" ]; do
   [ -z "$origin" ] && continue
   printf '{"url":"%s","status_code":200,"tech":["nginx"]}\n' "$origin"
 done
