@@ -116,6 +116,7 @@ case "$url" in
  https://nodejs.org/dist/v22.*/*.tar.gz) cp "$FAKE_DOWNLOADS/${url##*/}" "$out" ;;
  https://raw.githubusercontent.com/danielmiessler/SecLists/*/Discovery/DNS/subdomains-top1million-5000.txt) cp "$FAKE_DOWNLOADS/dns-wordlist.txt" "$out" ;;
  https://github.com/sensepost/gowitness/releases/download/3.2.2/gowitness-3.2.2-*) cp "$FAKE_DOWNLOADS/gowitness" "$out" ;;
+ https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb) cp "$FAKE_DOWNLOADS/chrome.deb" "$out" ;;
  *) echo "Unexpected download: $url" >&2;exit 8 ;;
 esac
 CURL
@@ -128,6 +129,15 @@ export RECONX_SETUP_DIR="$FIXTURE/setup"
 export RECONX_RUNTIME_DIR="$FIXTURE/runtime"
 export RECONX_PROFILE_FILE="$FIXTURE/profile"
 export RECONX_GO="$FIXTURE/fake-bin/fake-go"
+
+# Accidental sudo/root invocation must fail before creating root-owned paths.
+if (( EUID != 0 )) && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+  if sudo -n env RECONX_SETUP_DIR="$FIXTURE/forbidden-root" bash "$FIXTURE/project/install.sh" --binary-only > "$FIXTURE/root-rejected.log" 2>&1; then
+    echo 'Full installer accepted an accidental root invocation' >&2; exit 1
+  fi
+  grep -q 'normal login user' "$FIXTURE/root-rejected.log"
+  [[ ! -e "$FIXTURE/forbidden-root" ]]
+fi
 
 # CLI-only setup must stay local, validate the smoke command, and add PATH exactly once.
 printf 'old downloaded wrapper\n' > "$FIXTURE/project/reconx"
@@ -239,6 +249,38 @@ bash "$FIXTURE/project/install.sh" --skip-system-deps --cli-only --skip-checks -
 grep -q 'Screenshot dependencies ready:' "$FIXTURE/screenshot-install.log"
 bash "$FIXTURE/project/install.sh" --skip-system-deps --cli-only --skip-checks --no-profile > "$FIXTURE/screenshot-repeat.log" 2>&1
 grep -q 'gowitness 3.2.2 already installed' "$FIXTURE/screenshot-repeat.log"
+
+# When a browser is missing, --skip-system-deps must not silently claim
+# screenshot readiness. A normal apt-based install provisions Chrome.
+mv "$FIXTURE/fake-bin/google-chrome" "$FIXTURE/fake-bin/google-chrome.saved"
+if bash "$FIXTURE/project/install.sh" --skip-system-deps --cli-only --skip-checks --no-profile > "$FIXTURE/chrome-missing.log" 2>&1; then
+  echo 'Missing browser was silently accepted' >&2; exit 1
+fi
+grep -q 'Chrome/Chromium not found' "$FIXTURE/chrome-missing.log"
+printf 'fake Chrome deb\n' > "$FIXTURE/download/chrome.deb"
+cat > "$FIXTURE/fake-bin/sudo" <<'SUDO'
+#!/usr/bin/env bash
+[[ "${1:-}" == -v ]] && exit 0
+exec "$@"
+SUDO
+cat > "$FIXTURE/fake-bin/apt-get" <<'APT'
+#!/usr/bin/env bash
+if [[ " $* " == *" reconx-chrome-"* ]]; then
+  cp "$FAKE_BROWSER_FIXTURE" "$FAKE_BIN_ROOT/google-chrome"
+  chmod +x "$FAKE_BIN_ROOT/google-chrome"
+fi
+exit 0
+APT
+chmod +x "$FIXTURE/fake-bin/sudo" "$FIXTURE/fake-bin/apt-get"
+export FAKE_BIN_ROOT="$FIXTURE/fake-bin"
+export FAKE_BROWSER_FIXTURE="$FIXTURE/fake-bin/google-chrome.saved"
+if [[ "$os_name" == linux && "$go_arch" == amd64 ]]; then
+  bash "$FIXTURE/project/install.sh" --cli-only --skip-checks --no-profile > "$FIXTURE/chrome-auto.log" 2>&1
+  grep -q 'Screenshot dependencies ready:' "$FIXTURE/chrome-auto.log"
+  [[ -x "$FIXTURE/fake-bin/google-chrome" ]]
+fi
+cp "$FIXTURE/fake-bin/google-chrome.saved" "$FIXTURE/fake-bin/google-chrome"
+chmod +x "$FIXTURE/fake-bin/google-chrome"
 
 rm "$FIXTURE/setup/wordlists/subdomains.txt"
 printf 'tampered\n' > "$FIXTURE/download/dns-wordlist.txt"
