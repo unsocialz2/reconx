@@ -108,6 +108,24 @@ out_of_scope = ["staging.example.com"]
 
 Additional optional binaries are not all installed automatically. Missing/disabled tools and truncation limits appear in coverage. Host identity includes scheme and port. JSON/checkpoints retain all discovered URLs; HTML limits its displayed URL list to 5,000 and discloses that limit.
 
+### Per-phase triage engines (offline)
+
+Every normal report and `--report-only` rebuild also creates a `triage/` directory. Independent classifiers review **subdomains, HTTP endpoints, ports, URLs, JavaScript, scanner candidates, secret candidates, directories, cloud observations, CORS, parameters, WAF and network inventory**.
+
+- **P1**: review first (e.g. unverified high/critical scanner lead, possible sensitive credential, sensitive path with HTTP 2xx).
+- **P2**: promising review surface (e.g. authentication/API endpoint, management port, candidate CORS behavior).
+- **P3 / P4**: lower-priority inventory and contextual clues.
+- **Deferred**: unavailable/rate-limited HTTP endpoints; back off rather than retry aggressively.
+
+**Priority is not CVSS severity.** `severity_hint` is only the original scanner-reported severity, `confidence` identifies observations versus unverified candidates, and no lead is automatically labeled a confirmed vulnerability. No additional requests, exploits, credential checks or port scans are performed. Values of detected secrets are omitted, and URL query parameters are removed from exported targets.
+
+Open `triage/index.html` for an offline prioritized overview. All items are exported to `triage/triage.json` and `triage/triage.csv`, with separate `phase_*.csv` and `priority_*.csv` files and a `SUMMARY.md`. The HTML overview shows the top 500 leads; CSV and JSON are complete.
+
+```bash
+./reconx --report-only ./reconx-output/EXISTING-SCAN
+# Open ./reconx-output/EXISTING-SCAN/triage/index.html
+```
+
 ## Checkpoints and results
 
 Each scan has a unique directory containing `manifest.json` and private `checkpoint.json`, plus enabled reports and raw evidence. The versioned checkpoint preserves hosts, ports, URLs, JS files, sources, findings/evidence, secrets, WAF, directories, cloud, CORS and parameter results. Writes are atomic.

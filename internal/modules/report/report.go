@@ -2,11 +2,13 @@ package report
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/unsocialz2/reconx/internal/store"
+	"github.com/unsocialz2/reconx/internal/triage"
 )
 
 // ReportData holds everything needed to render the HTML report
@@ -109,7 +111,11 @@ func buildTestURL(targetURL, param string) string {
 
 // Generate creates a self-contained, paginated report containing all results.
 func Generate(st *store.Store, targets []string, outDir string) error {
-	return generateWorkspace(st, targets, outDir)
+	if err := generateWorkspace(st, targets, outDir); err != nil {
+		return err
+	}
+	// Offline-only phase analysis; no new target requests are made.
+	return triage.Generate(st.Snapshot(), filepath.Join(outDir, "triage"))
 }
 
 // redactSecretValue returns a redacted form of a secret value. We keep
