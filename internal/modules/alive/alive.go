@@ -461,27 +461,21 @@ func parseHTTPXLine(line string) *store.Host {
 		host.Meta["favicon_hash"] = fav
 	}
 
-	// Tech stack array
-	if idx := strings.Index(line, `"tech":`); idx != -1 {
-		rest := line[idx+7:]
-		if end := strings.Index(rest, "]"); end != -1 {
-			for _, t := range strings.Split(rest[:end], `"`) {
-				t = strings.Trim(t, `[]," `)
-				if t != "" && t != "null" && t != "," {
-					host.TechStack = append(host.TechStack, t)
-				}
+	// Technology arrays are parsed as JSON rather than string-split: this
+	// handles nested escaping, versions and supported httpx field aliases.
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(line), &fields); err == nil {
+		seen := map[string]bool{}
+		for _, field := range []string{"tech", "technologies"} {
+			var names []string
+			if err := json.Unmarshal(fields[field], &names); err != nil {
+				continue
 			}
-		}
-	}
-
-	// Technologies (newer httpx field name)
-	if idx := strings.Index(line, `"technologies":`); idx != -1 {
-		rest := line[idx+15:]
-		if end := strings.Index(rest, "]"); end != -1 {
-			for _, t := range strings.Split(rest[:end], `"`) {
-				t = strings.Trim(t, `[]," `)
-				if t != "" && t != "null" {
-					host.TechStack = append(host.TechStack, t)
+			for _, name := range names {
+				name = strings.TrimSpace(name)
+				if name != "" && !seen[name] {
+					seen[name] = true
+					host.TechStack = append(host.TechStack, name)
 				}
 			}
 		}
