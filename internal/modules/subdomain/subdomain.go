@@ -82,7 +82,7 @@ func (m *Module) Run(ctx context.Context) error {
 	// false positives (every word resolves). We detect this early and warn
 	// so the user can decide whether to continue or add --skip-bruteforce.
 	for _, domain := range m.cfg.Target.Domains {
-		if len(m.cfg.RetrySources) > 0 {
+		if len(m.cfg.RetrySources) > 0 || (m.cfg.InventoryOnly && !m.cfg.InventoryThorough) {
 			continue
 		}
 		m.runWildcardCheck(ctx, domain, board.ForTarget(domain))
@@ -127,7 +127,7 @@ func (m *Module) Run(ctx context.Context) error {
 	// ── massdns resolve (optional, runs if massdns binary is available) ────────
 	// Much faster than puredns/dnsx for very large subdomain sets (10k+).
 	// Results are merged back into store so later phases see everything.
-	if len(m.cfg.RetrySources) == 0 && total > 5000 && m.cfg.ToolAvailable("massdns") {
+	if len(m.cfg.RetrySources) == 0 && (!m.cfg.InventoryOnly || m.cfg.InventoryThorough) && total > 5000 && m.cfg.ToolAvailable("massdns") {
 		m.runMassdns(ctx, m.store.GetSubdomains())
 	}
 
@@ -199,6 +199,18 @@ func timeoutSuffix(state string) string {
 	return ""
 }
 
+// fastInventorySource intentionally selects a high-yield, quick passive subset.
+// Full source breadth, permutation and DNS brute force remain available with
+// --inventory-thorough. This reduces discovery coverage in exchange for speed.
+func fastInventorySource(name string) bool {
+	switch name {
+	case "subfinder", "assetfinder", "certspotter", "hackertarget", "rapiddns", "subdomaincenter", "urlscan":
+		return true
+	default:
+		return false
+	}
+}
+
 func (m *Module) enumerateDomain(ctx context.Context, domain string, board *logger.ProgressBoard) {
 	type toolDef struct {
 		name     string
@@ -255,6 +267,10 @@ func (m *Module) enumerateDomain(ctx context.Context, domain string, board *logg
 		var wg sync.WaitGroup
 		for _, t := range defs {
 			t := t
+			if m.cfg.InventoryOnly && !m.cfg.InventoryThorough && !fastInventorySource(t.name) {
+				board.Skip(t.name, "fast inventory: slow source disabled (use --inventory-thorough)")
+				continue
+			}
 			if !m.cfg.SelectsSource(t.name) {
 				board.Skip(t.name, "not selected for retry")
 				continue
@@ -335,6 +351,7 @@ func (m *Module) enumerateDomain(ctx context.Context, domain string, board *logg
 		}
 	}
 	runWave(passive)
+	if m.cfg.InventoryOnly && !m.cfg.InventoryThorough { return }
 
 	// ── WAVE 2: permutation + DNS brute-force ───────────────────────────────
 	// permute runs here (not in wave 1) for two reasons:
@@ -358,12 +375,21 @@ func (m *Module) runSubfinder(ctx context.Context, domain string, board *logger.
 	// subfinder's own provider config). Without it subfinder only queries
 	// its default subset — a common cause of "subfinder alone found more".
 	// -nc disables ANSI escape codes in subfinder output.
-	args := append([]string{"-d", domain, "-all", "-silent", "-nc"}, tcfg.Flags...)
+	args := []string{"-d", domain, "-all", "-silent", "-nc"}
+	if m.cfg.InventoryOnly && !m.cfg.InventoryThorough {
+		// No -all: optional slow providers regularly take minutes on wildcards.
+		args = []string{"-d", domain, "-silent", "-nc"}
+	}
+	args = append(args, tcfg.Flags...)
 
 	var count int
 	var mu sync.Mutex
+	timeout := time.Duration(tcfg.Timeout)*time.Second
+	if m.cfg.InventoryOnly && !m.cfg.InventoryThorough && (timeout == 0 || timeout > 60*time.Second) {
+		timeout = 60*time.Second
+	}
 	r := runner.Run(ctx, path, args,
-		runner.WithTimeout(time.Duration(tcfg.Timeout)*time.Second),
+		runner.WithTimeout(timeout),
 		runner.WithLineCallback(func(line string) {
 			mu.Lock()
 			count++
