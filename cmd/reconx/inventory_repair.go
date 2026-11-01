@@ -22,7 +22,7 @@ import (
 // runInventoryRepair is an in-place recovery operation on an existing scan.
 // It never re-enumerates subdomains or runs httpx, Nuclei, ports or other phases.
 // Permissions and scheme restrictions come from the original scan's manifest.
-func runInventoryRepair(scanDir string) error {
+func runInventoryRepair(scanDir string, screenshotWorkers int) error {
 	dir, err := filepath.Abs(scanDir)
 	if err != nil {
 		return err
@@ -53,6 +53,7 @@ func runInventoryRepair(scanDir string) error {
 	}
 	cfg := config.DefaultConfig()
 	cfg.InventoryOnly = true
+	cfg.ScreenshotWorkers = screenshotWorkers
 	cfg.Target = saved.Target
 	cfg.Scope = saved.Scope
 	filter := scope.New(cfg)

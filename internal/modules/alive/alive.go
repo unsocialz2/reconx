@@ -158,6 +158,12 @@ func (m *Module) runHttpx(ctx context.Context, subs []string, path string, tcfg 
 		workers := min(6, max(1, m.cfg.Workers))
 		args[4] = strconv.Itoa(workers) // -threads value
 		args[8] = "0" // -retries value
+		if !m.cfg.InventoryThorough {
+			args[6] = "6" // per-request timeout; slower endpoints may be missed
+			// Favicon hashing causes extra requests that are not needed for
+			// technology fingerprints or the inventory ranking.
+			args = args[:len(args)-1] // -favicon
+		}
 		args = append(args, "-location")
 	}
 	m.log.Tool("httpx", fmt.Sprintf("%d subdomains", len(subs)))
@@ -185,8 +191,12 @@ func (m *Module) runHttpx(ctx context.Context, subs []string, path string, tcfg 
 	})
 
 	budget := m.cfg.SourceBudget("httpx", len(subs), time.Hour)
+	// Larger input batches avoid repeatedly launching httpx and Chromium-like
+	// initialization for every 32 URLs; the same rate cap still applies.
+	batchSize := 32
+	if m.cfg.InventoryOnly { batchSize = 256 }
 	ctx = runner.WithProcessObserver(ctx, func(pid int, alive bool) { board.Process("httpx", pid, alive) })
-	r := runner.RunInputBatches(ctx, path, args, input, 32, budget, "",
+	r := runner.RunInputBatches(ctx, path, args, input, batchSize, budget, "",
 		runner.WithUniqueLines(),
 		runner.WithTimeout(time.Duration(tcfg.Timeout)*time.Second),
 		runner.WithStderrCallback(func(line string) {

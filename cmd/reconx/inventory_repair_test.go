@@ -51,7 +51,7 @@ head -c 256 /dev/zero > "$dest/mock.png"
 	st.AddSubdomain("web.example.org")
 	st.AddHost(&store.Host{Domain:"web.example.org",StatusCode:200,Meta:map[string]string{"url":"http://web.example.org"}})
 	if err:=st.SaveSnapshot(filepath.Join(dir,"checkpoint.json"));err!=nil{t.Fatal(err)}
-	if err:=runInventoryRepair(dir);err!=nil{t.Fatal(err)}
+	if err:=runInventoryRepair(dir, 4);err!=nil{t.Fatal(err)}
 	for _,file:=range []string{"inventory/index.html","inventory/subdomains_ranked.csv","report.html","screenshots/inventory_manifest.json","inventory-repair.log"}{
 		if _,err:=os.Stat(filepath.Join(dir,file));err!=nil{t.Fatalf("missing %s: %v",file,err)}
 	}

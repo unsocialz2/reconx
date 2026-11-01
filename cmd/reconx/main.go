@@ -67,7 +67,7 @@ func run(args []string) error {
 	fs := flag.NewFlagSet("reconx", flag.ContinueOnError)
 	var domains, ips, asns, cloudAssets, retryPhases, retrySources listFlag
 	var configPath, scopePath, scopeCSV, reportDir, previousDir, inventoryRepair string
-	var scopePreview, inventoryOnly bool
+	var scopePreview, inventoryOnly, inventoryThorough bool
 	var initConfig, showVersion, showDoctor bool
 	fs.Var(&domains, "d", "Authorized domain (repeatable)")
 	fs.Var(&ips, "ip", "Authorized IP or CIDR (repeatable)")
@@ -83,6 +83,8 @@ func run(args []string) error {
 	fs.StringVar(&scopeCSV, "scope-csv", "", "Import structured scope CSV (HackerOne or target/in_scope columns)")
 	fs.BoolVar(&scopePreview, "scope-preview", false, "Print effective target/scope JSON and exit without network requests")
 	fs.BoolVar(&inventoryOnly, "inventory", false, "Native wildcard inventory: scope CSV wildcards only; enumerate, probe HTTP, capture screenshots, rank and report")
+	fs.BoolVar(&inventoryThorough, "inventory-thorough", false, "Opt into all slower subdomain sources; fast source selection is the inventory default")
+	fs.IntVar(&cfg.ScreenshotWorkers, "screenshot-workers", cfg.ScreenshotWorkers, "Concurrent gowitness browser processes (1-8); inventory default 4")
 	fs.StringVar(&cfg.Target.OrgName, "org", cfg.Target.OrgName, "Explicit GitHub organization")
 	fs.StringVar(&cfg.Output.OutputDir, "output", cfg.Output.OutputDir, "Output directory")
 	fs.StringVar(&cfg.ResumeDir, "resume", "", "Resume a scan with the same target/scope")
@@ -152,7 +154,7 @@ func run(args []string) error {
 		if inventoryOnly || reportDir != "" || scopeCSV != "" || scopePreview || len(domains)+len(ips)+len(asns)+len(cloudAssets) > 0 || cfg.HasRetry() || cfg.ResumeDir != "" {
 			return fmt.Errorf("--inventory-repair accepts only an existing scan directory; scope is restored from its manifest")
 		}
-		return runInventoryRepair(inventoryRepair)
+		return runInventoryRepair(inventoryRepair, cfg.ScreenshotWorkers)
 	}
 	if reportDir != "" && (cfg.HasRetry() || cfg.Refresh) {
 		return fmt.Errorf("--report-only cannot be combined with execution retry/refresh flags")
@@ -178,12 +180,14 @@ func run(args []string) error {
 		}
 		return report.Generate(st, manifest.Target.Domains, reportDir)
 	}
+	if inventoryThorough && !inventoryOnly { return fmt.Errorf("--inventory-thorough requires --inventory") }
 	if inventoryOnly {
 		if scopeCSV == "" { return fmt.Errorf("--inventory requires --scope-csv with explicit eligible wildcard entries") }
 		if len(domains)+len(ips)+len(asns)+len(cloudAssets) > 0 || cfg.ResumeDir != "" || cfg.HasRetry() {
 			return fmt.Errorf("--inventory selects wildcard seeds exclusively from --scope-csv; omit -d, --ip, --asn and resume/retry")
 		}
 		cfg.InventoryOnly = true
+		cfg.InventoryThorough = inventoryThorough
 		cfg.Phases.SubdomainEnum = true
 		cfg.Phases.AliveCheck = true
 		cfg.Phases.Screenshots = true

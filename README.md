@@ -38,6 +38,46 @@ Previously captured PNGs are reused, and each failed attempt is described in
 check policy/ownership before opening unknown assets. Gowitness still needs a
 working Chrome/Chromium runtime for live captures.
 
+### Fast inventory is the default
+
+`--inventory` now defaults to a **speed-first, reduced-coverage** discovery
+preset. It runs the quickest passive sources (subfinder default providers,
+assetfinder, certspotter, hackertarget, rapiddns, subdomaincenter and urlscan)
+without slow amass enumeration, crt.sh, wordlist brute force, permutation or
+massdns expansion. It does not claim exhaustive discovery. If you need broader
+enumeration and can accept longer runtimes, add `--inventory-thorough`.
+
+HTTP inventory uses larger httpx input batches and disables favicon hashing
+in fast mode; HTTP status, IP, server, page title and technology detection
+remain on. HTTP retry remains disabled in inventory, and HTTP-only wildcard
+scheme restrictions still apply. Bounded screenshot capture uses **4 browser
+workers by default**, configurable with `--screenshot-workers 1..8`; each
+origin has its own screenshot directory. Every 8 finished images are
+checkpointed to the manifest, then the final manifest is written.
+
+```bash
+# Fast wildcard inventory using your existing ReconX binary.
+./reconx --inventory --scope-csv /path/to/scope.csv \
+  --workers 8 --screenshot-workers 4 --host-rps 2
+
+# Broader discovery when completeness matters more than speed:
+./reconx --inventory --inventory-thorough --scope-csv /path/to/scope.csv \
+  --workers 8 --screenshot-workers 4 --host-rps 2
+
+# Reuse existing HTTP observations without rediscovering:
+./reconx --inventory-repair ./reconx-output/EXISTING-SCAN \
+  --screenshot-workers 4
+```
+
+**Rate-limit caution:** `--host-rps` bounds supported HTTP probes,
+and may materially increase runtime for thousands of endpoints.
+Do not increase it beyond the bug bounty program's allowed traffic rate.
+Browser subrequests, remote passive APIs and HTTPX's rate behavior may not
+share the same global limiter; screenshot workers remain bounded but their
+requests are not guaranteed globally rate-limited. Higher concurrency costs
+more CPU/RAM and may overload targets. Unreachable/slow endpoints can be
+missed in the fast preset.
+
 ## Native wildcard inventory mode
 
 `--inventory` is a **built-in ReconX mode**, not a separate wrapper or tool. It accepts any HackerOne-compatible scope CSV, automatically selects **eligible wildcard assets only**, preserves explicit web exclusions and scheme-bound wildcard rules (including `http://*.example.org`), and runs just:
