@@ -316,3 +316,22 @@ func TestScanDiffUsesUnobservedInsteadOfClaimingRemoval(t *testing.T) {
 		t.Fatal("comparison not embedded")
 	}
 }
+
+func TestReportShowsNativeInventoryScreenshotAndDirectOpenLink(t *testing.T) {
+	st := store.New("repair-report")
+	st.AddSubdomain("web.example.org")
+	st.AddHost(&store.Host{Domain:"web.example.org", StatusCode:200,
+		Meta:map[string]string{"url":"http://web.example.org"}})
+	dir := t.TempDir()
+	capture := filepath.Join(dir,"screenshots","inventory","testhash","screenshot.png")
+	if err := os.MkdirAll(filepath.Dir(capture),0700);err!=nil{t.Fatal(err)}
+	if err := os.WriteFile(capture,[]byte("test image fixture"),0600);err!=nil{t.Fatal(err)}
+	manifest := `[{"url":"http://web.example.org","status":"captured","path":"screenshots/inventory/testhash/screenshot.png"}]`
+	if err := os.WriteFile(filepath.Join(dir,"screenshots","inventory_manifest.json"),[]byte(manifest),0600);err!=nil{t.Fatal(err)}
+	if err := Generate(st,[]string{"example.org"},dir);err!=nil{t.Fatal(err)}
+	html,err:=os.ReadFile(filepath.Join(dir,"report.html"))
+	if err!=nil{t.Fatal(err)}
+	for _,part:=range []string{"screenshots/inventory/testhash/screenshot.png","function openHostURL(host)","↗ Open"}{
+		if !strings.Contains(string(html),part){t.Errorf("standard report missing %q",part)}
+	}
+}

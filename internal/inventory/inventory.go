@@ -22,6 +22,8 @@ import (
 type HostRow struct {
 	Wildcard   string   `json:"wildcard"`
 	Subdomain  string   `json:"subdomain"`
+	URL        string   `json:"url,omitempty"`
+	LinkObserved bool  `json:"link_observed"`
 	Status     string   `json:"status"`
 	HTTP       []int    `json:"http_codes"`
 	Endpoints  int      `json:"endpoints"`
@@ -241,6 +243,7 @@ func Build(snap store.Snapshot, imported *config.ScopeImport, screenshots map[st
 		a.HTTP = append(a.HTTP, row.Code)
 		if statusRank(row.Status) > statusRank(a.Status) {
 			a.Status = row.Status
+			a.URL, a.LinkObserved = row.URL, row.Code > 0
 			a.IP, a.Title, a.Server = row.IP, row.Title, row.Server
 			a.Screenshot = row.Screenshot
 		}
@@ -248,6 +251,15 @@ func Build(snap store.Snapshot, imported *config.ScopeImport, screenshots map[st
 		a.Tech = uniqueStrings(append(a.Tech, row.Tech...))
 	}
 	for _, h := range hosts {
+		// A host without an observed HTTP endpoint may still be opened by the
+		// researcher. Preserve imported scheme restrictions and mark the link
+		// unverified; never silently force HTTPS on an HTTP-only wildcard.
+		if h.URL == "" {
+			for _, scheme := range []string{"https", "http"} {
+				candidate := scheme + "://" + h.Subdomain
+				if filter.IsInScope(candidate) { h.URL = candidate; break }
+			}
+		}
 		h.Score, h.Reasons = scoreHost(*h)
 		h.Priority = priority(h.Score, statusRank(h.Status) >= 4)
 		h.HTTP = uniqueInts(h.HTTP)
@@ -296,11 +308,11 @@ func hostCSV(h []HostRow) [][]string {
 	for _,v:=range h {
 		var codes []string
 		for _,code:=range v.HTTP {codes=append(codes,strconv.Itoa(code))}
-		rows=append(rows,[]string{v.Wildcard,v.Subdomain,v.Priority,strconv.Itoa(v.Score),v.Status,strings.Join(codes,","),strconv.Itoa(v.Endpoints),v.IP,v.Title,v.Server,strings.Join(v.Tech,"; "),v.Screenshot,strings.Join(v.Reasons,"; ")})
+		rows=append(rows,[]string{v.Wildcard,v.Subdomain,v.URL,strconv.FormatBool(v.LinkObserved),v.Priority,strconv.Itoa(v.Score),v.Status,strings.Join(codes,","),strconv.Itoa(v.Endpoints),v.IP,v.Title,v.Server,strings.Join(v.Tech,"; "),v.Screenshot,strings.Join(v.Reasons,"; ")})
 	}
 	return rows
 }
-var hostHeaders=[]string{"wildcard","subdomain","priority","score","status_group","http_codes","endpoints","ip","title","server","technologies","screenshot","reasons"}
+var hostHeaders=[]string{"wildcard","subdomain","url","link_observed","priority","score","status_group","http_codes","endpoints","ip","title","server","technologies","screenshot","reasons"}
 func endpointCSV(e []EndpointRow) [][]string {
 	rows:=make([][]string,0,len(e))
 	for _,v:=range e {
@@ -364,7 +376,7 @@ const page=`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta nam
 <label>Search <input id="query" type="search" placeholder="subdomain, server, tech..."></label>
 <span id="shown"></span></div>
 <div class="tablebox"><table><thead><tr><th>Priority / score</th><th>Wildcard</th><th>Subdomain</th><th>HTTP status</th><th>IP / server</th><th>Technologies</th><th>Page title</th><th>Screenshot</th><th>Why review?</th></tr></thead><tbody>
-{{range .Hosts}}<tr data-wild="{{.Wildcard}}" data-status="{{.Status}}" data-priority="{{.Priority}}"><td class="{{priorityClass .Priority}}"><b>{{.Priority}}</b> / {{.Score}}</td><td>{{.Wildcard}}</td><td><code>{{.Subdomain}}</code><small> ({{.Endpoints}} origins)</small></td><td>{{.Status}}<small>{{range .HTTP}} {{.}}{{end}}</small></td><td>{{.IP}}<small> {{.Server}}</small></td><td>{{range .Tech}}<small>{{.}} </small>{{end}}</td><td>{{.Title}}</td><td>{{if .Screenshot}}<a href="{{.Screenshot}}" target="_blank" rel="noopener"><img loading="lazy" alt="Screenshot" src="{{.Screenshot}}"></a>{{else}}<small>Not captured</small>{{end}}</td><td><small>{{range .Reasons}}{{.}}; {{end}}</small></td></tr>{{end}}
+{{range .Hosts}}<tr data-wild="{{.Wildcard}}" data-status="{{.Status}}" data-priority="{{.Priority}}"><td class="{{priorityClass .Priority}}"><b>{{.Priority}}</b> / {{.Score}}</td><td>{{.Wildcard}}</td><td>{{if .URL}}<a href="{{.URL}}" target="_blank" rel="noopener noreferrer" title="{{if .LinkObserved}}Open observed HTTP endpoint{{else}}Open unverified URL (no HTTP response observed){{end}}"><code>{{.Subdomain}}</code></a>{{else}}<code>{{.Subdomain}}</code>{{end}}<small> ({{.Endpoints}} origins){{if not .LinkObserved}} · URL unverified{{end}}</small></td><td>{{.Status}}<small>{{range .HTTP}} {{.}}{{end}}</small></td><td>{{.IP}}<small> {{.Server}}</small></td><td>{{range .Tech}}<small>{{.}} </small>{{end}}</td><td>{{.Title}}</td><td>{{if .Screenshot}}<a href="{{.Screenshot}}" target="_blank" rel="noopener"><img loading="lazy" alt="Screenshot" src="{{.Screenshot}}"></a>{{else}}<small>Not captured</small>{{end}}</td><td><small>{{range .Reasons}}{{.}}; {{end}}</small></td></tr>{{end}}
 </tbody></table></div>
 <script>
 const filters=['wild','status','priority'].map(id=>document.getElementById(id)),query=document.getElementById('query'),rows=Array.from(document.querySelectorAll('tbody tr')),shown=document.getElementById('shown');
