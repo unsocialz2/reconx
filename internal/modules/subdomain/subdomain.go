@@ -141,6 +141,10 @@ func (m *Module) Run(ctx context.Context) error {
 		m.log.Warn("Failed to save subdomains.txt: %v", err)
 	}
 	for _, status := range summaryStats {
+		if m.cfg.InventoryOnly && !m.cfg.InventoryThorough {
+			// Fast inventory is best-effort; partial providers stay in coverage.
+			continue
+		}
 		if !strings.HasSuffix(status.Name, " / wildcard-check") && (status.State == "error" || status.State == "timeout" || status.State == "partial") {
 			return fmt.Errorf("source %s incomplete: %s", status.Name, status.Message)
 		}
@@ -212,6 +216,13 @@ func fastInventorySource(name string) bool {
 }
 
 func (m *Module) enumerateDomain(ctx context.Context, domain string, board *logger.ProgressBoard) {
+	if m.cfg.InventoryOnly && !m.cfg.InventoryThorough {
+		// Bound the passive source wave so a stalled provider cannot
+		// delay every downstream inventory phase indefinitely.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 90*time.Second)
+		defer cancel()
+	}
 	type toolDef struct {
 		name     string
 		binKey   string // binary name to check in PATH; "" = HTTP-only
@@ -390,6 +401,7 @@ func (m *Module) runSubfinder(ctx context.Context, domain string, board *logger.
 	}
 	r := runner.Run(ctx, path, args,
 		runner.WithTimeout(timeout),
+		runner.WithHardTimeout(timeout),
 		runner.WithLineCallback(func(line string) {
 			mu.Lock()
 			count++
@@ -405,11 +417,14 @@ func (m *Module) runSubfinder(ctx context.Context, domain string, board *logger.
 func (m *Module) runAssetfinder(ctx context.Context, domain string, board *logger.ProgressBoard) ([]string, []string) {
 	tcfg := m.cfg.Tools["assetfinder"]
 
+	assetTimeout := time.Duration(tcfg.Timeout)*time.Second
+	if m.cfg.InventoryOnly && !m.cfg.InventoryThorough && (assetTimeout == 0 || assetTimeout > 60*time.Second) { assetTimeout=60*time.Second }
 	var count int
 	var mu sync.Mutex
 	r := runner.Run(ctx, tcfg.Path, []string{"-subs-only"},
 		runner.WithStdin(domain),
-		runner.WithTimeout(time.Duration(tcfg.Timeout)*time.Second),
+		runner.WithTimeout(assetTimeout),
+		runner.WithHardTimeout(assetTimeout),
 		runner.WithLineCallback(func(line string) {
 			mu.Lock()
 			count++
