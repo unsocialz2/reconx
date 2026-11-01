@@ -1531,6 +1531,28 @@
         } catch {}
       }
       SCAN_DATA.parameters = allParameters;
+      // Prefer the exact observed HTTP origin. For DNS-only wildcard hosts,
+      // offer a clearly unverified direct link using the allowed scope scheme.
+      function openHostURL(host) {
+        if (typeof host !== "string" || !host) return "";
+        const name = host.toLowerCase().replace(/\.$/, "");
+        const observed = arr(assets.get(name)?.endpoints)
+          .map((e) => e.meta?.url || "")
+          .find((raw) => /^https?:\/\//.test(raw) && hostOf(raw) === name);
+        if (observed) return observed;
+        const rules = arr(SCAN_DATA.scope?.Imported?.assets);
+        if (rules.some((r) => r.excluded && (
+          ((r.kind === "host" || r.kind === "origin") && name === r.host) ||
+          ((r.kind === "wildcard" || r.kind === "wildcard-origin") && name !== r.host && name.endsWith("." + r.host))
+        ))) return "";
+        const allowed = rules.filter((r) => !r.excluded &&
+          (r.kind === "wildcard" || r.kind === "wildcard-origin") &&
+          name !== r.host && name.endsWith("." + r.host))
+          .sort((a, b) => b.host.length - a.host.length);
+        if (!allowed.length) return "";
+        const scheme = allowed[0].kind === "wildcard-origin" ? allowed[0].scheme : "https";
+        return ["https", "http"].includes(scheme) ? scheme + "://" + name : "";
+      }
       const assets = new Map();
       function asset(h) {
         if (!h) return null;
@@ -2327,6 +2349,20 @@
                   ? openAsset(assets.get(r.host) || r)
                   : openRecord(r);
               td.append(b);
+              if (["queue", "assets", "subdomains", "hosts"].includes(id)) {
+                const targetHost = r.host || r.domain;
+                const uri = openHostURL(targetHost);
+                if (uri) {
+                  const open = node("a", " ↗ Open");
+                  open.href = uri;
+                  open.target = "_blank";
+                  open.rel = "noopener noreferrer";
+                  open.title = assets.get(targetHost)?.endpoints?.length
+                    ? "Open observed HTTP endpoint"
+                    : "Open URL inferred from scope; HTTP reachability not verified";
+                  td.append(open);
+                }
+              }
             } else if (id === "artifacts" && index === 0) {
               const a = node("a", v);
               if (!String(v).includes("..") && !String(v).startsWith("/")) {
