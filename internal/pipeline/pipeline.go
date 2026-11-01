@@ -16,6 +16,7 @@ import (
 
 	"github.com/unsocialz2/reconx/internal/config"
 	"github.com/unsocialz2/reconx/internal/modules/alive"
+	"github.com/unsocialz2/reconx/internal/inventory"
 	"github.com/unsocialz2/reconx/internal/modules/cloud"
 	"github.com/unsocialz2/reconx/internal/modules/cors"
 	"github.com/unsocialz2/reconx/internal/modules/dirfuzz"
@@ -412,7 +413,9 @@ func (p *Pipeline) Run(ctx context.Context) error {
 		if !p.cfg.ToolAvailable("gowitness") {
 			return runner.ErrUnavailable
 		}
-		return screenshot.New(p.cfg, p.store, p.log, p.outDir).Run(c)
+		module := screenshot.New(p.cfg, p.store, p.log, p.outDir)
+		if p.cfg.InventoryOnly { return module.RunInventory(c) }
+		return module.Run(c)
 	})
 	run("urls", p.cfg.Phases.URLDiscovery, func(c context.Context) error { return urls.New(p.cfg, p.store, p.scope, p.log, p.outDir).Run(c) })
 	run("directories", p.cfg.Phases.DirFuzz, func(c context.Context) error {
@@ -456,6 +459,11 @@ func (p *Pipeline) Run(ctx context.Context) error {
 		if p.cfg.Output.HTMLReport {
 			if err := report.Generate(p.store, p.cfg.Target.Domains, p.outDir); err != nil {
 				phaseErrors = append(phaseErrors, err)
+			}
+			if p.cfg.InventoryOnly {
+				if err := inventory.Generate(p.store.Snapshot(), p.cfg.Scope.Imported, p.outDir); err != nil {
+					phaseErrors = append(phaseErrors, err)
+				}
 			}
 		}
 	}
