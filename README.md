@@ -14,6 +14,30 @@ The installer handles OS prerequisites, user-local Go/Node when needed, the CLI,
 
 Start the dashboard with `~/.local/bin/reconx-web`, or use `./reconx --help` from the repository. For CLI-only setup: `bash install.sh --cli-only`. See [INSTALLATION.md](INSTALLATION.md) for the short guide, options, and log locations.
 
+### Repair screenshots and report links without rediscovery
+
+If an earlier native inventory run completed discovery/HTTP inventory but failed
+the screenshot phase (for example, older ReconX versions passed unsupported
+`--no-http` / `--no-https` flags to `gowitness scan single`), update ReconX
+and **reuse the saved checkpoint**:
+
+```bash
+git pull --ff-only
+go build -o reconx ./cmd/reconx
+./reconx --inventory-repair ./reconx-output/EXISTING-SCAN
+```
+
+This captures only permitted, previously observed screenshot candidates and
+rebuilds `inventory/index.html` and `report.html`. It does **not** rerun
+subdomain enumeration or httpx. The two reports have direct subdomain links:
+observed endpoints use their recorded HTTP/HTTPS schemes; name-only entries
+are marked **URL unverified**, and their suggested link honors HTTP-only scope.
+Previously captured PNGs are reused, and each failed attempt is described in
+`screenshots/inventory_manifest.json`; additional details are written to
+`inventory-repair.log`. Clicking a URL is a **new browser request**, so
+check policy/ownership before opening unknown assets. Gowitness still needs a
+working Chrome/Chromium runtime for live captures.
+
 ## Native wildcard inventory mode
 
 `--inventory` is a **built-in ReconX mode**, not a separate wrapper or tool. It accepts any HackerOne-compatible scope CSV, automatically selects **eligible wildcard assets only**, preserves explicit web exclusions and scheme-bound wildcard rules (including `http://*.example.org`), and runs just:
