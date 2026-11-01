@@ -65,6 +65,19 @@ func (m *Module) Run(ctx context.Context) error {
 		m.log.Info("Probing %d subdomains with httpx...", len(subs))
 	}
 
+	if m.cfg.InventoryOnly {
+		// Always pass explicit schemes, especially for HTTP-only wildcard origins.
+		filter := scope.New(m.cfg)
+		var endpoints []string
+		for _, sub := range subs {
+			for _, scheme := range []string{"https://", "http://"} {
+				if raw := scheme + sub; filter.IsInScope(raw) {
+					endpoints = append(endpoints, raw)
+				}
+			}
+		}
+		subs = endpoints
+	}
 	tcfg := m.cfg.Tools["httpx"]
 	httpxPath := "httpx"
 	if tcfg.Path != "" {
@@ -88,6 +101,10 @@ func (m *Module) Run(ctx context.Context) error {
 		}
 	}
 
+	if m.cfg.InventoryOnly {
+		// HTTP inventory only: do not run WAF, takeover or TLS discovery.
+		return err
+	}
 	// ── WAF Detection (after httpx, before fuzzing/vuln scan) ───────────────
 	// Knowing whether a WAF is present lets us tune threads/timing in later
 	// phases to avoid getting blocked or rate-limited.
@@ -136,6 +153,13 @@ func (m *Module) runHttpx(ctx context.Context, subs []string, path string, tcfg 
 		"-favicon",
 	}
 
+	if m.cfg.InventoryOnly {
+		// Bound external tool concurrency; no fallback between HTTP and HTTPS.
+		workers := min(6, max(1, m.cfg.Workers))
+		args[5] = strconv.Itoa(workers) // -threads value
+		args[9] = "0" // -retries value
+		args = append(args, "-location")
+	}
 	m.log.Tool("httpx", fmt.Sprintf("%d subdomains", len(subs)))
 	m.log.ToolCmd("httpx", args, fmt.Sprintf("[%d subdomains via stdin]", len(subs)))
 
@@ -239,6 +263,10 @@ func (m *Module) runHttpx(ctx context.Context, subs []string, path string, tcfg 
 func (m *Module) runCurlFallback(ctx context.Context, subs []string) error {
 	var endpoints []string
 	for _, sub := range subs {
+		if strings.Contains(sub, "://") {
+			endpoints = append(endpoints, sub)
+			continue
+		}
 		for _, scheme := range []string{"https", "http"} {
 			endpoints = append(endpoints, scheme+"://"+sub)
 		}
@@ -412,6 +440,7 @@ func parseHTTPXLine(line string) *store.Host {
 
 	host.Title = firstOf(line, "title", "Title", "page-title")
 	host.Server = firstOf(line, "webserver", "web-server", "server", "Server")
+	host.Meta["location"] = firstOf(line, "location", "Location")
 	// Clean IP address
 	rawIP := firstOf(line, "a", "ip", "IP")
 	rawIP = strings.Trim(rawIP, `[]"' `)
