@@ -25,6 +25,7 @@ type Item struct {
 	Target       string `json:"target"`
 	Priority     string `json:"priority"`
 	Score        int    `json:"priority_score"`
+	Occurrences  int    `json:"occurrences"`
 	SeverityHint string `json:"severity_hint"`
 	Confidence   string `json:"confidence"`
 	Reason       string `json:"reason"`
@@ -69,7 +70,7 @@ func rank(score int) string {
 func candidate(phase, title, target string, score int, reason, next string) Item {
 	return Item{
 		Phase: phase, Title: title, Target: safeTarget(target),
-		Priority: rank(score), Score: score, SeverityHint: "unknown",
+		Priority: rank(score), Score: score, Occurrences: 1, SeverityHint: "unknown",
 		Confidence: "observation", Reason: reason, NextStep: next,
 	}
 }
@@ -376,15 +377,16 @@ func analyzeNetworks(s store.Snapshot) []Item {
 // Analyze runs one independent classifier per discovery phase without network
 // requests. Outputs are deterministic and deduplicated across each phase.
 func Analyze(s store.Snapshot) []Item {
-	seen := make(map[string]bool)
+	seen := make(map[string]int)
 	var items []Item
 	for _, engine := range phaseEngines {
 		for _, item := range engine(s) {
 			key := item.Phase + "\x00" + item.Title + "\x00" + item.Target
-			if seen[key] {
+			if previous, exists := seen[key]; exists {
+				items[previous].Occurrences++
 				continue
 			}
-			seen[key] = true
+			seen[key] = len(items)
 			sum := sha256.Sum256([]byte(key))
 			item.ID = hex.EncodeToString(sum[:8])
 			items = append(items, item)
@@ -415,11 +417,11 @@ func Analyze(s store.Snapshot) []Item {
 func writeCSV(path string, items []Item) error {
 	var buf strings.Builder
 	w := csv.NewWriter(&buf)
-	if err := w.Write([]string{"id", "phase", "priority", "score", "severity_hint", "confidence", "title", "target", "reason", "next_step"}); err != nil {
+	if err := w.Write([]string{"id", "phase", "priority", "score", "occurrences", "severity_hint", "confidence", "title", "target", "reason", "next_step"}); err != nil {
 		return err
 	}
 	for _, x := range items {
-		if err := w.Write([]string{x.ID, x.Phase, x.Priority, strconv.Itoa(x.Score), x.SeverityHint, x.Confidence, x.Title, x.Target, x.Reason, x.NextStep}); err != nil {
+		if err := w.Write([]string{x.ID, x.Phase, x.Priority, strconv.Itoa(x.Score), strconv.Itoa(x.Occurrences), x.SeverityHint, x.Confidence, x.Title, x.Target, x.Reason, x.NextStep}); err != nil {
 			return err
 		}
 	}
@@ -450,7 +452,7 @@ func summary(items []Item, counts map[string]int) []byte {
 const htmlPage = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>ReconX phase triage</title><meta name="viewport" content="width=device-width,initial-scale=1"><style>
 body{font:14px system-ui, sans-serif;max-width:1300px;margin:3rem auto;padding:0 1rem;color:#dbe5ed;background:#101820}
 h1{margin-bottom:.5rem}p{color:#b5c3d0}a{color:#81c6ff}table{border-collapse:collapse;width:100%;margin:1.5rem 0}th,td{padding:.65rem;border-bottom:1px solid #33424d;text-align:left;vertical-align:top;overflow-wrap:anywhere}th{position:sticky;top:0;background:#182630}.p1{color:#ff9595}.p2{color:#ffc78c}.p3{color:#e5d88e}.p4{color:#9bd1b4}.pill{font-weight:700}nav{display:flex;gap:1rem;flex-wrap:wrap}small{color:#b5c3d0}
-</style></head><body><h1>ReconX phase triage</h1><p>{{.Disclaimer}}</p><nav><a href="triage.csv">All leads CSV</a><a href="triage.json">JSON</a><a href="SUMMARY.md">Summary</a></nav><p>Showing first {{len .Items}} leads (complete data in exports).</p><table><thead><tr><th>Priority</th><th>Phase</th><th>Title</th><th>Target</th><th>Evidence caveat</th></tr></thead><tbody>{{range .Items}}<tr><td class="pill {{.CSS}}">{{.Priority}}</td><td>{{.Phase}}</td><td>{{.Title}}</td><td>{{.Target}}</td><td><small>{{.Reason}}</small></td></tr>{{end}}</tbody></table></body></html>`
+</style></head><body><h1>ReconX phase triage</h1><p>{{.Disclaimer}}</p><nav><a href="triage.csv">All leads CSV</a><a href="triage.json">JSON</a><a href="SUMMARY.md">Summary</a></nav><p>Showing first {{len .Items}} leads (complete data in exports).</p><table><thead><tr><th>Priority</th><th>Count</th><th>Phase</th><th>Title</th><th>Target</th><th>Evidence caveat</th></tr></thead><tbody>{{range .Items}}<tr><td class="pill {{.CSS}}">{{.Priority}}</td><td>{{.Occurrences}}</td><td>{{.Phase}}</td><td>{{.Title}}</td><td>{{.Target}}</td><td><small>{{.Reason}}</small></td></tr>{{end}}</tbody></table></body></html>`
 
 type htmlItem struct {
 	Item
