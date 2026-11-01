@@ -282,7 +282,7 @@ APT
 chmod +x "$FIXTURE/fake-bin/sudo" "$FIXTURE/fake-bin/apt-get"
 export FAKE_BIN_ROOT="$FIXTURE/fake-bin"
 export FAKE_BROWSER_FIXTURE="$FIXTURE/fake-bin/google-chrome.saved"
-if [[ "$os_name" == linux && "$go_arch" == amd64 ]]; then
+if [[ -z "$system_browser" && "$os_name" == linux && "$go_arch" == amd64 ]]; then
   bash "$FIXTURE/project/install.sh" --cli-only --skip-checks --no-profile > "$FIXTURE/chrome-auto.log" 2>&1
   grep -q 'Screenshot dependencies ready:' "$FIXTURE/chrome-auto.log"
   [[ -x "$FIXTURE/fake-bin/google-chrome" ]]
