@@ -3,6 +3,7 @@ package report
 import (
 	"encoding/json"
 	"html/template"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -155,6 +156,30 @@ func generateWorkspace(st *store.Store, targets []string, outDir string) error {
 		rel := "screenshots/" + entry.Name() + "/screenshot.png"
 		if _, err := os.Stat(filepath.Join(outDir, rel)); err == nil {
 			w.Screenshots[entry.Name()] = rel
+		}
+	}
+	// Inventory-mode screenshots are stored per exact origin in hashed
+	// directories. Load their verified mapping into the standard workspace too.
+	if raw, err := os.ReadFile(filepath.Join(outDir, "screenshots", "inventory_manifest.json")); err == nil {
+		var captures []struct {
+			URL string `json:"url"`
+			Path string `json:"path"`
+			Status string `json:"status"`
+		}
+		if json.Unmarshal(raw, &captures) == nil {
+			for _, capture := range captures {
+				if capture.Status != "captured" || !strings.HasPrefix(capture.Path, "screenshots/inventory/") ||
+					!strings.HasSuffix(capture.Path, "/screenshot.png") || strings.Contains(capture.Path, "..") {
+					continue
+				}
+				u, err := url.Parse(capture.URL)
+				if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.Hostname() == "" {
+					continue
+				}
+				if _, err := os.Stat(filepath.Join(outDir, filepath.FromSlash(capture.Path))); err == nil {
+					w.Screenshots[strings.ToLower(u.Hostname())] = capture.Path
+				}
+			}
 		}
 	}
 	entries, _ = os.ReadDir(filepath.Join(outDir, "tasks"))
