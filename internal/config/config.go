@@ -714,7 +714,7 @@ func (c *Config) RunnerPolicy() runner.Policy {
 	for key, t := range c.Tools {
 		tools[key] = runner.ToolPolicy{Enabled: t.Enabled, Path: t.Path, Flags: t.Flags, Timeout: time.Duration(t.Timeout) * time.Second, RateLimit: t.RateLimit}
 	}
-	return runner.Policy{Tools: tools, Workers: c.Workers, NoTimeout: c.NoTimeout, Header: c.BugBountyHeader, RequestRate: max(1, int(c.HostRPS))}
+	return runner.Policy{Tools: tools, Workers: c.Workers, NoTimeout: c.NoTimeout, Header: c.BugBountyHeader, RequestRate: max(1, int(c.HostRPS)), InventoryHTTPXFast: c.InventoryOnly}
 }
 
 func (c *Config) HTTPController() *httpcontrol.Controller {
