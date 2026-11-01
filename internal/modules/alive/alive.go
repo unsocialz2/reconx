@@ -154,14 +154,17 @@ func (m *Module) runHttpx(ctx context.Context, subs []string, path string, tcfg 
 	}
 
 	if m.cfg.InventoryOnly {
-		// Run one native httpx worker pool for the entire wildcard inventory:
-		// no ReconX 6-thread clamp, no injected rate limit, no repeat probes.
-		// The explicit -nf retains the original HTTP/HTTPS scheme.
-		args[8] = "0" // -retries value
-		// Favicon hashing is a separate HTTP request, not required for
-		// HTTP status/title/server/tech fingerprints.
-		args = args[:len(args)-1] // -favicon
-		args = append(args, "-location")
+		// Use httpx's native parallelism and request pacing. No extra
+		// ReconX concurrency or rate cap; one process handles all endpoints.
+		// -nf retains explicitly scoped HTTP and HTTPS URLs.
+		args = []string{
+			"-silent", "-json", "-nf",
+			"-timeout", "10", "-retries", "0",
+			"-status-code", "-title", "-web-server",
+			"-content-length", "-tech-detect", "-location",
+		}
+		// -favicon is intentionally omitted: it initiates a separate
+		// request and is not required for technology fingerprinting.
 	}
 	m.log.Tool("httpx", fmt.Sprintf("%d subdomains", len(subs)))
 	m.log.ToolCmd("httpx", args, fmt.Sprintf("[%d subdomains via stdin]", len(subs)))
@@ -194,7 +197,7 @@ func (m *Module) runHttpx(ctx context.Context, subs []string, path string, tcfg 
 	batchSize := 32
 	if m.cfg.InventoryOnly {
 		batchSize = max(1, len(subs))
-		m.log.Info("Inventory httpx: single process / %d endpoints / native 50-thread pool / no ReconX-injected rate cap", len(subs))
+		m.log.Info("Inventory httpx: single process / %d endpoints / native concurrency and rate defaults (no ReconX-injected caps)", len(subs))
 	}
 	ctx = runner.WithProcessObserver(ctx, func(pid int, alive bool) { board.Process("httpx", pid, alive) })
 	r := runner.RunInputBatches(ctx, path, args, input, batchSize, budget, "",
