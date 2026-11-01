@@ -22,10 +22,10 @@ import (
 // InventoryScreenshot stores a verifiable URL-to-file mapping. Each origin
 // gets its own directory, so HTTP/HTTPS/ports never overwrite one another.
 type InventoryScreenshot struct {
-	URL    string `"json:"url""`
-	Path   string `"json:"path,omitempty""`
-	Status string `"json:"status""`
-	Reason string `"json:"reason,omitempty""`
+	URL    string `json:"url"`
+	Path   string `json:"path,omitempty"`
+	Status string `json:"status"`
+	Reason string `json:"reason,omitempty"`
 }
 
 func safeScreenshotTarget(host *store.Host, filter *scope.Filter) (string, string) {
