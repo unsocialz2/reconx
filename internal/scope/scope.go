@@ -179,6 +179,24 @@ func matchAsset(value, host string, a config.ScopeAsset) bool {
 		return ipInCIDR(host, a.Host)
 	case "wildcard":
 		return host != a.Host && strings.HasSuffix(host, "."+a.Host)
+	case "wildcard-origin":
+		if host == a.Host || !strings.HasSuffix(host, "."+a.Host) {
+			return false
+		}
+		if !strings.Contains(value, "://") {
+			// Bare names are discovery candidates; explicit scheme is required
+			// when authorizing an HTTP request.
+			return !a.Excluded
+		}
+		u, err := url.Parse(value)
+		if err != nil || u.User != nil {
+			return false
+		}
+		port := u.Port()
+		if port == "" {
+			if u.Scheme == "https" { port = "443" } else if u.Scheme == "http" { port = "80" }
+		}
+		return u.Scheme == a.Scheme && port == a.Port
 	case "host", "ip":
 		return host == a.Host
 	case "origin":
@@ -221,7 +239,7 @@ func (f *Filter) ValidateDiscoverySeeds() error {
 	for _, domain := range f.cfg.Target.Domains {
 		allowed := f.IsInScope(domain)
 		for _, a := range imported.Assets {
-			if !a.Excluded && a.Kind == "wildcard" && a.Host == domain {
+			if !a.Excluded && (a.Kind == "wildcard" || a.Kind == "wildcard-origin") && a.Host == domain {
 				allowed = true
 			}
 		}
