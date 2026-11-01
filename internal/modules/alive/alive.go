@@ -158,13 +158,13 @@ func (m *Module) runHttpx(ctx context.Context, subs []string, path string, tcfg 
 		workers := min(6, max(1, m.cfg.Workers))
 		args[4] = strconv.Itoa(workers) // -threads value
 		args[8] = "0" // -retries value
-		args = append(args, "-location")
 		if !m.cfg.InventoryThorough {
 			args[6] = "6" // per-request timeout; slower endpoints may be missed
 			// Favicon hashing causes extra requests that are not needed for
 			// technology fingerprints or the inventory ranking.
 			args = args[:len(args)-1] // -favicon
 		}
+		args = append(args, "-location")
 	}
 	m.log.Tool("httpx", fmt.Sprintf("%d subdomains", len(subs)))
 	m.log.ToolCmd("httpx", args, fmt.Sprintf("[%d subdomains via stdin]", len(subs)))
