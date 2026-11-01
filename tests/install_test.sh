@@ -253,10 +253,18 @@ grep -q 'gowitness 3.2.2 already installed' "$FIXTURE/screenshot-repeat.log"
 # When a browser is missing, --skip-system-deps must not silently claim
 # screenshot readiness. A normal apt-based install provisions Chrome.
 mv "$FIXTURE/fake-bin/google-chrome" "$FIXTURE/fake-bin/google-chrome.saved"
-if bash "$FIXTURE/project/install.sh" --skip-system-deps --cli-only --skip-checks --no-profile > "$FIXTURE/chrome-missing.log" 2>&1; then
-  echo 'Missing browser was silently accepted' >&2; exit 1
+system_browser=""
+for candidate in google-chrome google-chrome-stable chromium chromium-browser; do
+  if command -v "$candidate" >/dev/null 2>&1; then system_browser="$(command -v "$candidate")"; break; fi
+done
+# Some CI images already include Chrome; only assert failure when no other
+# browser can satisfy the requirement after the local fixture is removed.
+if [[ -z "$system_browser" ]]; then
+  if bash "$FIXTURE/project/install.sh" --skip-system-deps --cli-only --skip-checks --no-profile > "$FIXTURE/chrome-missing.log" 2>&1; then
+    echo 'Missing browser was silently accepted' >&2; exit 1
+  fi
+  grep -q 'Chrome/Chromium not found' "$FIXTURE/chrome-missing.log"
 fi
-grep -q 'Chrome/Chromium not found' "$FIXTURE/chrome-missing.log"
 printf 'fake Chrome deb\n' > "$FIXTURE/download/chrome.deb"
 cat > "$FIXTURE/fake-bin/sudo" <<'SUDO'
 #!/usr/bin/env bash
@@ -265,7 +273,7 @@ exec "$@"
 SUDO
 cat > "$FIXTURE/fake-bin/apt-get" <<'APT'
 #!/usr/bin/env bash
-if [[ " $* " == *" reconx-chrome-"* ]]; then
+if [[ " $* " == *reconx-chrome-* ]]; then
   cp "$FAKE_BROWSER_FIXTURE" "$FAKE_BIN_ROOT/google-chrome"
   chmod +x "$FAKE_BIN_ROOT/google-chrome"
 fi
