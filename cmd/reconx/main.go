@@ -83,7 +83,7 @@ func run(args []string) error {
 	fs.StringVar(&scopeCSV, "scope-csv", "", "Import structured scope CSV (HackerOne or target/in_scope columns)")
 	fs.BoolVar(&scopePreview, "scope-preview", false, "Print effective target/scope JSON and exit without network requests")
 	fs.BoolVar(&inventoryOnly, "inventory", false, "Native wildcard inventory: scope CSV wildcards only; enumerate, probe HTTP, capture screenshots, rank and report")
-	fs.BoolVar(&inventoryThorough, "inventory-thorough", false, "Opt into all slower subdomain sources; fast source selection is the inventory default")
+	fs.BoolVar(&inventoryThorough, "inventory-thorough", false, "Compatibility alias: all available discovery sources are now enabled by default for inventory")
 	fs.IntVar(&cfg.ScreenshotWorkers, "screenshot-workers", cfg.ScreenshotWorkers, "Concurrent gowitness browser processes (1-8); inventory default 4")
 	fs.StringVar(&cfg.Target.OrgName, "org", cfg.Target.OrgName, "Explicit GitHub organization")
 	fs.StringVar(&cfg.Output.OutputDir, "output", cfg.Output.OutputDir, "Output directory")
@@ -187,7 +187,7 @@ func run(args []string) error {
 			return fmt.Errorf("--inventory selects wildcard seeds exclusively from --scope-csv; omit -d, --ip, --asn and resume/retry")
 		}
 		cfg.InventoryOnly = true
-		cfg.InventoryThorough = inventoryThorough
+		cfg.InventoryThorough = true // never silently trim wildcard discovery sources in inventory mode
 		cfg.Phases.SubdomainEnum = true
 		cfg.Phases.AliveCheck = true
 		cfg.Phases.Screenshots = true

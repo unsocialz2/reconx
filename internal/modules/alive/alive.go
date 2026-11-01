@@ -154,17 +154,17 @@ func (m *Module) runHttpx(ctx context.Context, subs []string, path string, tcfg 
 	}
 
 	if m.cfg.InventoryOnly {
-		// Bound external tool concurrency; no fallback between HTTP and HTTPS.
-		workers := min(6, max(1, m.cfg.Workers))
-		args[4] = strconv.Itoa(workers) // -threads value
-		args[8] = "0" // -retries value
-		if !m.cfg.InventoryThorough {
-			args[6] = "6" // per-request timeout; slower endpoints may be missed
-			// Favicon hashing causes extra requests that are not needed for
-			// technology fingerprints or the inventory ranking.
-			args = args[:len(args)-1] // -favicon
+		// Use httpx's native parallelism and request pacing. No extra
+		// ReconX concurrency or rate cap; one process handles all endpoints.
+		// -nf retains explicitly scoped HTTP and HTTPS URLs.
+		args = []string{
+			"-silent", "-json", "-nf",
+			"-timeout", "10", "-retries", "0",
+			"-status-code", "-title", "-web-server",
+			"-content-length", "-tech-detect", "-location",
 		}
-		args = append(args, "-location")
+		// -favicon is intentionally omitted: it initiates a separate
+		// request and is not required for technology fingerprinting.
 	}
 	m.log.Tool("httpx", fmt.Sprintf("%d subdomains", len(subs)))
 	m.log.ToolCmd("httpx", args, fmt.Sprintf("[%d subdomains via stdin]", len(subs)))
@@ -191,10 +191,14 @@ func (m *Module) runHttpx(ctx context.Context, subs []string, path string, tcfg 
 	})
 
 	budget := m.cfg.SourceBudget("httpx", len(subs), time.Hour)
-	// Larger input batches avoid repeatedly launching httpx and Chromium-like
-	// initialization for every 32 URLs; the same rate cap still applies.
+	// Each inventory scan launches one httpx process for all HTTP endpoints.
+	// Previously 256-target chunks restarted httpx repeatedly and serialized
+	// the whole scan. Non-inventory runs retain their resumable 32-host batches.
 	batchSize := 32
-	if m.cfg.InventoryOnly { batchSize = 256 }
+	if m.cfg.InventoryOnly {
+		batchSize = max(1, len(subs))
+		m.log.Info("Inventory httpx: single process / %d endpoints / native concurrency and rate defaults (no ReconX-injected caps)", len(subs))
+	}
 	ctx = runner.WithProcessObserver(ctx, func(pid int, alive bool) { board.Process("httpx", pid, alive) })
 	r := runner.RunInputBatches(ctx, path, args, input, batchSize, budget, "",
 		runner.WithUniqueLines(),
