@@ -52,3 +52,40 @@ func TestInventoryFilesOffline(t *testing.T){
 		if _,err:=os.Stat(filepath.Join(tmp,p));err!=nil{t.Fatalf("missing %s: %v",p,err)}
 	}
 }
+
+func TestClickableHostLinksPreserveObservedSchemesAndScope(t *testing.T) {
+	snap := store.Snapshot{
+		Subdomains: []string{"admin.example.com", "unknown.example.com", "site.example.org", "blocked.example.com"},
+		Hosts: []*store.Host{
+			{Domain:"admin.example.com",StatusCode:200,Meta:map[string]string{"url":"http://admin.example.com"}},
+			{Domain:"site.example.org",StatusCode:200,Meta:map[string]string{"url":"http://site.example.org"}},
+		},
+	}
+	report := Build(snap,sampleImport(),nil)
+	if len(report.Hosts)!=3 { t.Fatalf("incorrect permitted hosts: %#v",report.Hosts) }
+	for _,h:=range report.Hosts {
+		switch h.Subdomain {
+		case "admin.example.com":
+			if h.URL!="http://admin.example.com" || !h.LinkObserved {t.Errorf("observed scheme lost: %#v",h)}
+		case "site.example.org":
+			if h.URL!="http://site.example.org" || !h.LinkObserved {t.Errorf("HTTP-only scheme lost: %#v",h)}
+		case "unknown.example.com":
+			if h.URL!="https://unknown.example.com" || h.LinkObserved {t.Errorf("unverified URL mislabeled: %#v",h)}
+		case "blocked.example.com":
+			t.Fatal("excluded hostname was linked")
+		}
+	}
+	root:=t.TempDir()
+	if err:=Generate(snap,sampleImport(),root);err!=nil{t.Fatal(err)}
+	html,err:=os.ReadFile(filepath.Join(root,"inventory","index.html"))
+	if err!=nil{t.Fatal(err)}
+	for _,expect:=range []string{
+		`href="http://admin.example.com"`,
+		`href="http://site.example.org"`,
+		`href="https://unknown.example.com"`,
+		`URL unverified`,
+	} {
+		if !strings.Contains(string(html),expect){t.Errorf("missing host link or label %s",expect)}
+	}
+	if strings.Contains(string(html),`href="https://site.example.org"`){t.Fatal("HTTP-only site linked through HTTPS")}
+}
