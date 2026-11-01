@@ -113,12 +113,17 @@ test("scan launches, reaches completion and returns redacted results", async () 
   assert.equal(response.status, 201);
   const { scanId } = await response.json();
   let details;
+  const observed = [];
   for (let i = 0; i < 100; i++) {
     details = await (await fetch(base + "/api/scans/" + scanId)).json();
-    if (details.scan.status !== "running") break;
+    observed.push(details.scan.status);
+    // The API must never report a successfully running fixture as failed
+    // during the asynchronous close -> metadata commit window.
+    assert.notEqual(details.scan.status, "failed", `premature failure: ${observed.join(" -> ")}; log: ${details.log}`);
+    if (details.scan.status === "completed") break;
     await delay(50);
   }
-  assert.equal(details.scan.status, "completed");
+  assert.equal(details.scan.status, "completed", `statuses: ${observed.join(" -> ")}; log: ${details.log}`);
   assert.equal(details.results.secrets[0].value, "[REDACTED]");
   assert.equal(details.results.urls.length, 1);
   assert.equal(

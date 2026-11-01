@@ -185,22 +185,29 @@ export async function launch(input: unknown) {
   const finish = async (ok: boolean) => {
     if (done) return;
     done = true;
-    children.delete(id);
+    // Keep the child registered until the terminal metadata is committed.
+    // readScan() interprets "running without a tracked child" as a crashed
+    // previous server. Deleting here made fast successful scans transiently
+    // appear "failed" to API clients before finish() saved "completed".
     log.end();
-    const current = await readScan(id).catch(() => meta);
-    const details = await scanDetails(id).catch(() => null);
-    if (details?.scan.outputDir) current.outputDir = details.scan.outputDir;
-    current.status =
-      current.status === "stopped"
-        ? "stopped"
-        : ok
-          ? "completed"
-          : details?.results
-            ? "partial"
-            : "failed";
-    current.endTime = new Date().toISOString();
-    await save(current);
-    await fs.rm(configFile, { force: true });
+    try {
+      const current = await readScan(id).catch(() => meta);
+      const details = await scanDetails(id).catch(() => null);
+      if (details?.scan.outputDir) current.outputDir = details.scan.outputDir;
+      current.status =
+        current.status === "stopped"
+          ? "stopped"
+          : ok
+            ? "completed"
+            : details?.results
+              ? "partial"
+              : "failed";
+      current.endTime = new Date().toISOString();
+      await save(current);
+      await fs.rm(configFile, { force: true });
+    } finally {
+      children.delete(id);
+    }
   };
   child.once("error", () => {
     void finish(false);
