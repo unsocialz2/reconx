@@ -82,6 +82,10 @@ func parseScopeAsset(identifier string) (ScopeAsset, error) {
 			return a, fmt.Errorf("invalid origin port")
 		}
 		a.Port = strconv.Itoa(port)
+		if strings.HasPrefix(a.Host, "*.") {
+			a.Kind = "wildcard-origin"
+			a.Host = strings.TrimPrefix(a.Host, "*.")
+		}
 		if net.ParseIP(a.Host) == nil && !csvDomain.MatchString(a.Host) {
 			return a, fmt.Errorf("invalid origin hostname")
 		}
@@ -178,6 +182,21 @@ func (c *Config) LoadScopeCSV(path string) error {
 				}
 			}
 		}
+		// Inventory mode deliberately imports only explicit eligible wildcard
+		// identifiers. Exact assets cannot expand the HTTP authorization boundary.
+		if c.InventoryOnly && in {
+			val := strings.ToLower(strings.TrimSpace(record[id]))
+			isWildcard := strings.HasPrefix(val, "*.")
+			if strings.Contains(val, "://") {
+				if u, e := url.Parse(val); e == nil {
+					isWildcard = strings.HasPrefix(u.Hostname(), "*.")
+				}
+			}
+			if !isWildcard {
+				imported.Skipped = append(imported.Skipped, fmt.Sprintf("row %d: non-wildcard not selected for inventory (%s)", row, record[id]))
+				continue
+			}
+		}
 		assetType := ""
 		if kind >= 0 {
 			assetType = csvHeader(record[kind])
@@ -187,7 +206,7 @@ func (c *Config) LoadScopeCSV(path string) error {
 		default:
 			if !in {
 				switch assetType {
-				case "android_app_id", "android", "androidplaystore", "ios_app_store_id", "ios", "iosappstore", "hardware", "source_code", "sourcecode":
+				case "android_app_id", "google_play_app_id", "android", "androidplaystore", "ios_app_store_id", "apple_app_store_id", "ios", "iosappstore", "hardware", "source_code", "sourcecode":
 				default:
 					if _, err := parseScopeAsset(record[id]); err == nil {
 						return fmt.Errorf("scope CSV row %d: excluded web/network identifier has unsupported type %q; classify this row explicitly", row, assetType)
