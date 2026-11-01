@@ -73,6 +73,10 @@ type OutputConfig struct {
 type Config struct {
 	// InventoryOnly limits a scan to wildcard discovery, HTTP observations and screenshots.
 	InventoryOnly bool
+	// InventoryThorough opts back into all slow discovery sources; fast is default.
+	InventoryThorough bool
+	// ScreenshotWorkers bounds concurrent gowitness browser processes (1-8).
+	ScreenshotWorkers int
 	AdaptiveBudgets bool
 	BudgetCap       int
 	BudgetStatus    func(BudgetPlan) `json:"-"`
@@ -107,6 +111,7 @@ type Config struct {
 func DefaultConfig() *Config {
 	return &Config{
 		Workers:         10,
+		ScreenshotWorkers: 4,
 		AdaptiveBudgets: true, BudgetCap: 3600,
 		HostRPS: 2, HTTPRetries: 1, HTTPMaxBackoff: 30,
 		Phases: PhasesConfig{
@@ -737,6 +742,9 @@ func (c *Config) Validate() error {
 	}
 	if !(c.HostRPS > 0 && c.HostRPS <= 1000) || c.HTTPRetries < 0 || c.HTTPRetries > 3 || c.HTTPMaxBackoff < 1 || c.HTTPMaxBackoff > 300 {
 		return fmt.Errorf("host-rps must be >0 and <=1000; http-retries 0–3; http-max-backoff 1–300 seconds")
+	}
+	if c.ScreenshotWorkers < 1 || c.ScreenshotWorkers > 8 {
+		return fmt.Errorf("screenshot-workers must be between 1 and 8")
 	}
 	if c.Workers < 1 || c.Workers > 256 {
 		return fmt.Errorf("workers must be between 1 and 256")
