@@ -8,7 +8,7 @@ STATE_DIR="${RECONX_SETUP_DIR:-$HOME/.config/reconx}"
 RUNTIME_DIR="${RECONX_RUNTIME_DIR:-$HOME/.local/share/reconx}"
 INSTALL_DIR="${RECONX_BIN_DIR:-$HOME/.local/bin}"
 TOOLS_DIR="${RECONX_TOOLS_DIR:-${GOBIN:-$HOME/go/bin}}"
-SKIP_SYSTEM=0 SKIP_TOOLS=0 SKIP_WEB=0 SKIP_CHECKS=0 NO_PROFILE=0 BINARY_ONLY=0 WITH_SCANNERS=0
+SKIP_SYSTEM=0 SKIP_TOOLS=0 SKIP_WEB=0 SKIP_CHECKS=0 SKIP_SCREENSHOTS=0 NO_PROFILE=0 BINARY_ONLY=0 WITH_SCANNERS=0
 
 usage() {
   cat <<'HELP'
@@ -18,10 +18,11 @@ Default: system prerequisites, Go/Node if needed, ReconX, core tools,
          dashboard, offline checks, and shell PATH setup.
 
   --with-scanners     Also install optional Naabu/Nuclei and nuclei templates
+  --skip-screenshots  Skip gowitness v3 and browser setup (default: install)
   --cli-only          Skip Node.js and the dashboard
   --binary-only       Build/install ReconX only (Go must already be available)
   --skip-system-deps  Do not run apt/dnf/Homebrew
-  --skip-tools        Skip external tools and template downloads
+  --skip-tools        Skip external tools and template downloads (including screenshots)
   --skip-checks       Skip test suites (always run the CLI smoke test)
   --no-profile        Do not edit shell startup files
   -h, --help          Show this help
@@ -33,8 +34,9 @@ HELP
 for arg in "$@"; do
   case "$arg" in
     --with-scanners) WITH_SCANNERS=1 ;;
+    --skip-screenshots) SKIP_SCREENSHOTS=1 ;;
     --cli-only) SKIP_WEB=1 ;;
-    --binary-only) BINARY_ONLY=1; SKIP_SYSTEM=1; SKIP_TOOLS=1; SKIP_WEB=1; SKIP_CHECKS=1; NO_PROFILE=1 ;;
+    --binary-only) BINARY_ONLY=1; SKIP_SYSTEM=1; SKIP_TOOLS=1; SKIP_SCREENSHOTS=1; SKIP_WEB=1; SKIP_CHECKS=1; NO_PROFILE=1 ;;
     --skip-system-deps) SKIP_SYSTEM=1 ;;
     --skip-tools) SKIP_TOOLS=1 ;;
     --skip-checks) SKIP_CHECKS=1 ;;
@@ -43,6 +45,16 @@ for arg in "$@"; do
     *) printf 'Unknown option: %s\n' "$arg" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+# The complete install is user-local. Using sudo for the whole script
+# silently installs Go/HTTPX under /root and breaks the normal user's PATH.
+# sudo is requested below only for OS packages.
+if (( EUID == 0 )) && [[ "${RECONX_ALLOW_ROOT:-0}" != 1 ]]; then
+  printf '%s\n' 'ReconX must be installed as your normal login user, not with sudo.' >&2
+  printf '%s\n' 'Run: bash install.sh (the script invokes sudo only for OS packages).' >&2
+  printf '%s\n' 'For an intentionally root-only environment: RECONX_ALLOW_ROOT=1 bash install.sh' >&2
+  exit 2
+fi
 
 OS="$(uname -s)"
 case "$OS" in Linux|Darwin) ;; *) printf 'Unsupported OS: %s (Linux/macOS required)\n' "$OS" >&2; exit 1 ;; esac
