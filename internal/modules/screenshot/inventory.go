@@ -134,6 +134,14 @@ func (m *Module) RunInventory(ctx context.Context) error {
 				entry.Status = "failed"
 				if run.Err != nil {
 					entry.Reason = "gowitness failed: " + fmt.Sprint(run.Err)
+					if len(run.Stderr) > 0 {
+						// Bound diagnostic data in the manifest instead of
+						// storing full browser logs for every failed URL.
+						start := max(0, len(run.Stderr)-5)
+						detail := strings.TrimSpace(strings.Join(run.Stderr[start:], " | "))
+						if len(detail) > 400 { detail = detail[:400] + "..." }
+						if detail != "" { entry.Reason += " — " + detail }
+					}
 				} else {
 					entry.Reason = "gowitness did not produce a nonempty PNG"
 				}
