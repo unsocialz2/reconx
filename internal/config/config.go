@@ -71,6 +71,8 @@ type OutputConfig struct {
 
 // Config is the root configuration
 type Config struct {
+	// InventoryOnly limits a scan to wildcard discovery, HTTP observations and screenshots.
+	InventoryOnly bool
 	AdaptiveBudgets bool
 	BudgetCap       int
 	BudgetStatus    func(BudgetPlan) `json:"-"`
