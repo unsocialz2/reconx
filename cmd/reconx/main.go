@@ -66,7 +66,7 @@ func run(args []string) error {
 	}
 	fs := flag.NewFlagSet("reconx", flag.ContinueOnError)
 	var domains, ips, asns, cloudAssets, retryPhases, retrySources listFlag
-	var configPath, scopePath, scopeCSV, reportDir, previousDir string
+	var configPath, scopePath, scopeCSV, reportDir, previousDir, inventoryRepair string
 	var scopePreview, inventoryOnly bool
 	var initConfig, showVersion, showDoctor bool
 	fs.Var(&domains, "d", "Authorized domain (repeatable)")
@@ -77,6 +77,7 @@ func run(args []string) error {
 	fs.BoolVar(&showDoctor, "doctor", false, "Read-only tool and settings preflight (JSON)")
 	fs.StringVar(&previousDir, "compare-with", "", "Compare an older checkpoint when rebuilding a report")
 	fs.StringVar(&reportDir, "report-only", "", "Rebuild HTML from an existing checkpoint without scanning")
+	fs.StringVar(&inventoryRepair, "inventory-repair", "", "Reuse an existing wildcard inventory scan: retry screenshots and regenerate reports without rediscovery or HTTP probing")
 	fs.StringVar(&configPath, "config", "", "INI configuration path")
 	fs.StringVar(&scopePath, "scope", "", "Scope include/exclude file")
 	fs.StringVar(&scopeCSV, "scope-csv", "", "Import structured scope CSV (HackerOne or target/in_scope columns)")
@@ -147,6 +148,12 @@ func run(args []string) error {
 	fs.Visit(func(f *flag.Flag) { visited[f.Name] = true })
 	cfg.RetryPhases = config.NormalizeRetry(retryPhases)
 	cfg.RetrySources = config.NormalizeRetry(retrySources)
+	if inventoryRepair != "" {
+		if inventoryOnly || reportDir != "" || scopeCSV != "" || scopePreview || len(domains)+len(ips)+len(asns)+len(cloudAssets) > 0 || cfg.HasRetry() || cfg.ResumeDir != "" {
+			return fmt.Errorf("--inventory-repair accepts only an existing scan directory; scope is restored from its manifest")
+		}
+		return runInventoryRepair(inventoryRepair)
+	}
 	if reportDir != "" && (cfg.HasRetry() || cfg.Refresh) {
 		return fmt.Errorf("--report-only cannot be combined with execution retry/refresh flags")
 	}
