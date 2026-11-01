@@ -10,7 +10,7 @@ cd reconx
 bash install.sh
 ```
 
-The installer handles OS prerequisites, user-local Go/Node when needed, the CLI, pinned tools (including Gitleaks), nuclei templates, dashboard build, offline checks, and Bash/Zsh PATH setup. It does not scan a target. Linux apt/dnf and macOS with Homebrew/Apple command-line tools are supported; Windows is not supported.
+The installer handles OS prerequisites, user-local Go/Node when needed, the CLI, pinned tools (including Gitleaks), checksum-verified **gowitness v3.2.2**, Chrome on supported Ubuntu/Debian amd64 when missing, dashboard build, offline checks, and Bash/Zsh PATH setup. It does not scan a target. Run **`bash install.sh` without sudo**; the script requests privileges only for OS packages. Use `--skip-screenshots` to omit browser/screenshot setup, and `--with-scanners` to opt into Nuclei/Naabu. Linux apt/dnf and macOS with Homebrew/Apple command-line tools are supported; Windows is not supported.
 
 Start the dashboard with `~/.local/bin/reconx-web`, or use `./reconx --help` from the repository. For CLI-only setup: `bash install.sh --cli-only`. See [INSTALLATION.md](INSTALLATION.md) for the short guide, options, and log locations.
 
