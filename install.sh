@@ -226,6 +226,69 @@ if (( ! SKIP_TOOLS )); then
   printf 'Core tools (including Gitleaks) and help checks passed. Screenshots and additional scanners are optional.\n'
 fi
 
+# The native --inventory pipeline captures screenshots by default.
+# Install a verified gowitness v3 binary and a browser where supported.
+# No target requests are made during this setup.
+if (( ! SKIP_TOOLS && ! SKIP_SCREENSHOTS )); then
+  step 'Screenshot prerequisites (gowitness v3 and Chrome)'
+  gw_version=3.2.2
+  gw_platform=""
+  gw_sha=""
+  case "$OS/$GO_ARCH" in
+    Linux/amd64)  gw_platform=linux-amd64;  gw_sha=639ae67aee8010b2224a63e75a600196a2175ff9e4961893c338966245cb ;;
+    Linux/arm64)  gw_platform=linux-arm64;  gw_sha=97768fa8660bc0f4d0affe4e4e036db46832ff41 ;;
+    Darwin/amd64) gw_platform=darwin-amd64; gw_sha=23b137030c0b9a0160604656d0682ab0621253fa ;;
+    Darwin/arm64) gw_platform=darwin-arm64; gw_sha=91d00a7d8cb715d9a14025db54ec268746f88d7f ;;
+    *) printf 'No supported gowitness binary for %s/%s. Rerun with --skip-screenshots to omit screenshot setup.\n' "$OS" "$GO_ARCH" >&2; exit 1 ;;
+  esac
+  if [[ -x "$TOOLS_DIR/gowitness" ]] && "$TOOLS_DIR/gowitness" version 2>&1 | grep -q "gowitness: $gw_version"; then
+    printf 'gowitness %s already installed.\n' "$gw_version"
+  else
+    gw_asset="gowitness-$gw_version-$gw_platform"
+    fetch "https://github.com/sensepost/gowitness/releases/download/$gw_version/$gw_asset" "$WORK_DIR/$gw_asset"
+    verify_sha "$WORK_DIR/$gw_asset" "$gw_sha"
+    staged_gw="$(mktemp "$TOOLS_DIR/.gowitness.XXXXXXXX")"
+    STAGED_BINARIES+=("$staged_gw")
+    install -m 755 "$WORK_DIR/$gw_asset" "$staged_gw"
+    mv -f "$staged_gw" "$TOOLS_DIR/gowitness"
+  fi
+  "$TOOLS_DIR/gowitness" version
+  "$TOOLS_DIR/gowitness" scan single --help > "$WORK_DIR/gowitness-help.txt" 2>&1
+  for flag in '--url' '--screenshot-path' '--screenshot-format' '--timeout' '--threads'; do
+    grep -Fq -- "$flag" "$WORK_DIR/gowitness-help.txt" || {
+      printf 'gowitness v3 is missing required scan single flag %s\n' "$flag" >&2; exit 1;
+    }
+  done
+  browser=""
+  for candidate in google-chrome google-chrome-stable chromium chromium-browser; do
+    if command -v "$candidate" >/dev/null 2>&1; then browser="$(command -v "$candidate")"; break; fi
+  done
+  if [[ -z "$browser" && "$OS" == Darwin && -x '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' ]]; then
+    browser='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+  fi
+  if [[ -z "$browser" ]]; then
+    if [[ "$OS" == Linux && "$GO_ARCH" == amd64 ]] && command -v apt-get >/dev/null 2>&1 && (( ! SKIP_SYSTEM )); then
+      # Official .deb (HTTPS). Place in world-readable /tmp so apt's
+      # unprivileged _apt worker can read it; remove it after installation.
+      chrome_deb="$(mktemp /tmp/reconx-chrome-XXXXXXXX.deb)"
+      STAGED_BINARIES+=("$chrome_deb")
+      fetch 'https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb' "$chrome_deb"
+      chmod 644 "$chrome_deb"
+      chrome_privilege=()
+      if (( EUID != 0 )); then need sudo; sudo -v; chrome_privilege=(sudo); fi
+      "${chrome_privilege[@]}" env DEBIAN_FRONTEND=noninteractive apt-get install -y "$chrome_deb"
+      browser="$(command -v google-chrome || true)"
+    else
+      printf 'Chrome/Chromium not found. Install a supported browser manually or rerun with --skip-screenshots.\n' >&2
+      printf 'For Ubuntu amd64 automatic Chrome installation, run the installer without --skip-system-deps.\n' >&2
+      exit 1
+    fi
+  fi
+  [[ -n "$browser" ]] || { printf 'Chrome/Chromium installation did not expose a browser binary.\n' >&2; exit 1; }
+  "$browser" --version
+  printf 'Screenshot dependencies ready: %s, %s\n' "$TOOLS_DIR/gowitness" "$browser"
+fi
+
 if (( ! SKIP_WEB )); then
   step 'Node.js and npm'
   NODE_OK=0
