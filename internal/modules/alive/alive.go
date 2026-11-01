@@ -156,8 +156,8 @@ func (m *Module) runHttpx(ctx context.Context, subs []string, path string, tcfg 
 	if m.cfg.InventoryOnly {
 		// Bound external tool concurrency; no fallback between HTTP and HTTPS.
 		workers := min(6, max(1, m.cfg.Workers))
-		args[5] = strconv.Itoa(workers) // -threads value
-		args[9] = "0" // -retries value
+		args[4] = strconv.Itoa(workers) // -threads value
+		args[8] = "0" // -retries value
 		args = append(args, "-location")
 	}
 	m.log.Tool("httpx", fmt.Sprintf("%d subdomains", len(subs)))
