@@ -67,7 +67,7 @@ func run(args []string) error {
 	fs := flag.NewFlagSet("reconx", flag.ContinueOnError)
 	var domains, ips, asns, cloudAssets, retryPhases, retrySources listFlag
 	var configPath, scopePath, scopeCSV, reportDir, previousDir string
-	var scopePreview bool
+	var scopePreview, inventoryOnly bool
 	var initConfig, showVersion, showDoctor bool
 	fs.Var(&domains, "d", "Authorized domain (repeatable)")
 	fs.Var(&ips, "ip", "Authorized IP or CIDR (repeatable)")
@@ -81,6 +81,7 @@ func run(args []string) error {
 	fs.StringVar(&scopePath, "scope", "", "Scope include/exclude file")
 	fs.StringVar(&scopeCSV, "scope-csv", "", "Import structured scope CSV (HackerOne or target/in_scope columns)")
 	fs.BoolVar(&scopePreview, "scope-preview", false, "Print effective target/scope JSON and exit without network requests")
+	fs.BoolVar(&inventoryOnly, "inventory", false, "Native wildcard inventory: scope CSV wildcards only; enumerate, probe HTTP, capture screenshots, rank and report")
 	fs.StringVar(&cfg.Target.OrgName, "org", cfg.Target.OrgName, "Explicit GitHub organization")
 	fs.StringVar(&cfg.Output.OutputDir, "output", cfg.Output.OutputDir, "Output directory")
 	fs.StringVar(&cfg.ResumeDir, "resume", "", "Resume a scan with the same target/scope")
@@ -170,8 +171,34 @@ func run(args []string) error {
 		}
 		return report.Generate(st, manifest.Target.Domains, reportDir)
 	}
+	if inventoryOnly {
+		if scopeCSV == "" { return fmt.Errorf("--inventory requires --scope-csv with explicit eligible wildcard entries") }
+		if len(domains)+len(ips)+len(asns)+len(cloudAssets) > 0 || cfg.ResumeDir != "" || cfg.HasRetry() {
+			return fmt.Errorf("--inventory selects wildcard seeds exclusively from --scope-csv; omit -d, --ip, --asn and resume/retry")
+		}
+		cfg.InventoryOnly = true
+		cfg.Phases.SubdomainEnum = true
+		cfg.Phases.AliveCheck = true
+		cfg.Phases.Screenshots = true
+		cfg.Phases.PortScan = false
+		cfg.Phases.URLDiscovery = false
+		cfg.Phases.JSAnalysis = false
+		cfg.Phases.VulnScan = false
+		cfg.Phases.CloudEnum = false
+		cfg.Phases.CORS = false
+		cfg.Phases.DirFuzz = false
+		cfg.Phases.Params = false
+		cfg.Phases.Report = true
+		cfg.Output.HTMLReport = true
+		cfg.Output.JSONReport = true
+		cfg.Output.SaveRaw = true
+		cfg.Target.Domains = nil
+		cfg.Target.IPRanges = nil
+		cfg.Target.ASNs = nil
+		cfg.Target.CloudAssets = nil
+	}
 	for name, value := range skipValues {
-		if visited["skip-"+name] {
+		if visited["skip-"+name] && !inventoryOnly {
 			*skips[name] = !*value
 		}
 	}
