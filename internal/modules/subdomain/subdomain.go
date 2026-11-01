@@ -399,9 +399,11 @@ func (m *Module) runSubfinder(ctx context.Context, domain string, board *logger.
 	if m.cfg.InventoryOnly && !m.cfg.InventoryThorough && (timeout == 0 || timeout > 60*time.Second) {
 		timeout = 60*time.Second
 	}
+	hardLimit := time.Duration(0)
+	if m.cfg.InventoryOnly && !m.cfg.InventoryThorough {hardLimit = timeout}
 	r := runner.Run(ctx, path, args,
 		runner.WithTimeout(timeout),
-		runner.WithHardTimeout(timeout),
+		runner.WithHardTimeout(hardLimit),
 		runner.WithLineCallback(func(line string) {
 			mu.Lock()
 			count++
@@ -419,12 +421,14 @@ func (m *Module) runAssetfinder(ctx context.Context, domain string, board *logge
 
 	assetTimeout := time.Duration(tcfg.Timeout)*time.Second
 	if m.cfg.InventoryOnly && !m.cfg.InventoryThorough && (assetTimeout == 0 || assetTimeout > 60*time.Second) { assetTimeout=60*time.Second }
+	assetHardLimit := time.Duration(0)
+	if m.cfg.InventoryOnly && !m.cfg.InventoryThorough {assetHardLimit = assetTimeout}
 	var count int
 	var mu sync.Mutex
 	r := runner.Run(ctx, tcfg.Path, []string{"-subs-only"},
 		runner.WithStdin(domain),
 		runner.WithTimeout(assetTimeout),
-		runner.WithHardTimeout(assetTimeout),
+		runner.WithHardTimeout(assetHardLimit),
 		runner.WithLineCallback(func(line string) {
 			mu.Lock()
 			count++
